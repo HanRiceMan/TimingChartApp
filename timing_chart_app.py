@@ -781,6 +781,7 @@ class TimingChartView(QGraphicsView):
 # Tabs
 # =========================
 
+
 class DeviceTab(QWidget):
     model_about_to_change = Signal(str)
     model_changed = Signal()
@@ -791,13 +792,18 @@ class DeviceTab(QWidget):
 
         layout = QVBoxLayout(self)
 
-        self.table = QTableWidget(0, 9)
+        self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels([
-            "大項目ID", "大項目", "中項目ID", "中項目", "小項目ID", "小項目", "動作種別", "動作番号", "動作"
+            "項目", "動作種別", "動作番号 / 動作"
         ])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         layout.addWidget(self.table)
+
+        note = QLabel("※ 項目列は「ID 名称」の形式で表示し、名称のインデントで大項目 / 中項目 / 小項目を表します。")
+        layout.addWidget(note)
 
         btn_row = QHBoxLayout()
         self.add_btn = QPushButton("追加")
@@ -833,21 +839,21 @@ class DeviceTab(QWidget):
 
         self.table.setRowCount(len(rows))
         for r, (large, middle, small, action) in enumerate(rows):
+            large_text = f"{large.id_number} {large.name}" if large else ""
+            middle_text = f"    {middle.id_number} {middle.name}" if middle else ""
+            small_text = f"        {small.id_number} {small.name}" if small else ""
+            item_text = "\n".join([x for x in [large_text, middle_text, small_text] if x])
+
             vals = [
-                str(large.id_number if large else ""),
-                (large.name if large else ""),
-                str(middle.id_number if middle else ""),
-                ("    " + middle.name) if middle else "",
-                str(small.id_number if small else ""),
-                ("        " + small.name) if small else "",
+                item_text,
                 action.action_type,
-                str(action.action_no),
-                action.name,
+                f"{action.action_no} / {action.name}",
             ]
             for c, v in enumerate(vals):
                 item = QTableWidgetItem(v)
                 item.setData(Qt.UserRole, action.uid)
                 self.table.setItem(r, c, item)
+            self.table.setRowHeight(r, 62)
 
     def _selected_action_uid(self) -> Optional[int]:
         row = self.table.currentRow()
@@ -910,7 +916,6 @@ class DeviceTab(QWidget):
             middle_uid = self._resolve_or_create_hierarchy("middle", value["middle_existing"], large_uid, value["middle_id"], value["middle_name"])
             small_uid = self._resolve_or_create_hierarchy("small", value["small_existing"], middle_uid, value["small_id"], value["small_name"])
 
-            # Update selected action
             action.small_item_uid = small_uid
             action.action_no = value["action_no"]
             action.name = value["action_name"]
