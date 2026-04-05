@@ -1266,6 +1266,14 @@ class DeviceTab(QWidget):
 
 
 
+class NumericTableWidgetItem(QTableWidgetItem):
+    def __lt__(self, other):
+        try:
+            return int(self.text()) < int(other.text())
+        except Exception:
+            return super().__lt__(other)
+
+
 class OperationsTab(QWidget):
     model_about_to_change = Signal(str)
     model_changed = Signal()
@@ -1275,12 +1283,12 @@ class OperationsTab(QWidget):
         self.model = model
 
         layout = QVBoxLayout(self)
-        self.table = QTableWidget(0, 12)
+        self.table = QTableWidget(0, 13)
         self.table.setHorizontalHeaderLabels([
-            "動作UID", "大項目", "中項目", "小項目", "開始ポイント", "終了ポイント",
+            "No", "動作UID", "大項目", "中項目", "小項目", "開始ポイント", "終了ポイント",
             "開始トリガ", "開始依存元動作UID", "終了設定", "終了トリガ", "終了依存元動作UID", "時間(ms)"
         ])
-        for i in range(12):
+        for i in range(13):
             self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.Interactive)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -1306,6 +1314,7 @@ class OperationsTab(QWidget):
         self.del_btn.clicked.connect(self.delete_operation)
         self.refresh_btn.clicked.connect(self.refresh)
         self.table.itemDoubleClicked.connect(lambda _: self.edit_operation())
+        self.table.horizontalHeader().sortIndicatorChanged.connect(lambda *_: self._renumber_no_column())
 
         self.refresh()
 
@@ -1330,6 +1339,7 @@ class OperationsTab(QWidget):
                     return value
 
             vals = [
+                str(r + 1),
                 str(op.uid),
                 f"{large.id_number} {large.name}" if large else "",
                 f"{middle.id_number} {middle.name}" if middle else "",
@@ -1344,18 +1354,29 @@ class OperationsTab(QWidget):
                 str(op.duration_ms),
             ]
             for c, v in enumerate(vals):
-                item = QTableWidgetItem(v)
+                numeric_cols = {0, 1, 8, 11, 12}
+                item = NumericTableWidgetItem(v) if c in numeric_cols and v not in ("", "-") else QTableWidgetItem(v)
                 item.setData(Qt.UserRole, op.uid)
                 self.table.setItem(r, c, item)
 
         self.table.setSortingEnabled(True)
-        self.table.sortItems(0, Qt.AscendingOrder)
+        self.table.sortItems(1, Qt.AscendingOrder)
+        self._renumber_no_column()
         if current_uid is not None:
             self._select_operation_uid(current_uid)
 
-    def _select_operation_uid(self, op_uid: int):
+    def _renumber_no_column(self):
         for r in range(self.table.rowCount()):
             item = self.table.item(r, 0)
+            if item is None:
+                item = NumericTableWidgetItem(str(r + 1))
+                self.table.setItem(r, 0, item)
+            else:
+                item.setText(str(r + 1))
+
+    def _select_operation_uid(self, op_uid: int):
+        for r in range(self.table.rowCount()):
+            item = self.table.item(r, 1)
             if item and item.data(Qt.UserRole) == op_uid:
                 self.table.selectRow(r)
                 break
@@ -1364,7 +1385,7 @@ class OperationsTab(QWidget):
         row = self.table.currentRow()
         if row < 0:
             return None
-        item = self.table.item(row, 0)
+        item = self.table.item(row, 1)
         return item.data(Qt.UserRole) if item else None
 
     def _uid_exists(self, uid: int, exclude_uid: Optional[int] = None) -> bool:
