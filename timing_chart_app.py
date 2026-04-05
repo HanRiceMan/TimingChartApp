@@ -192,6 +192,13 @@ class AppModel:
                     name="ON",
                     points=["ON", "OFF"],
                 ))
+                self.action_definitions.append(ActionDefinition(
+                    uid=self.next_action_uid(),
+                    small_item_uid=small.uid,
+                    action_no=2,
+                    name="OFF",
+                    points=["ON", "OFF"],
+                ))
                 continue
             first = actions[0]
             first.action_no = 1
@@ -1166,6 +1173,13 @@ class DeviceTab(QWidget):
                 name="ON",
                 points=["ON", "OFF"],
             ))
+            self.model.action_definitions.append(ActionDefinition(
+                uid=self.model.next_action_uid(),
+                small_item_uid=small_uid,
+                action_no=2,
+                name="OFF",
+                points=["ON", "OFF"],
+            ))
             return
         first = actions[0]
         first.action_no = 1
@@ -1639,11 +1653,15 @@ class MainWindow(QMainWindow):
             ActionDefinition(uid=1, small_item_uid=3, action_no=1, name="上昇", points=["原点", "待機", "上限"]),
             ActionDefinition(uid=2, small_item_uid=3, action_no=2, name="下降", points=["原点", "待機", "上限"]),
             ActionDefinition(uid=3, small_item_uid=4, action_no=1, name="ON", points=["ON", "OFF"]),
+            ActionDefinition(uid=3, small_item_uid=4, action_no=2, name="OFF", points=["ON", "OFF"]),
             ActionDefinition(uid=4, small_item_uid=8, action_no=1, name="ON", points=["ON", "OFF"]),
+            ActionDefinition(uid=4, small_item_uid=8, action_no=2, name="OFF", points=["ON", "OFF"]),
             ActionDefinition(uid=5, small_item_uid=6, action_no=1, name="供給移動", points=["受取", "待機", "供給"]),
             ActionDefinition(uid=6, small_item_uid=7, action_no=1, name="ON", points=["ON", "OFF"]),
+            ActionDefinition(uid=6, small_item_uid=7, action_no=2, name="OFF", points=["ON", "OFF"]),
             ActionDefinition(uid=7, small_item_uid=11, action_no=1, name="前進後退", points=["後退", "中間", "前進"]),
             ActionDefinition(uid=8, small_item_uid=12, action_no=1, name="ON", points=["ON", "OFF"]),
+            ActionDefinition(uid=8, small_item_uid=12, action_no=2, name="OFF", points=["ON", "OFF"]),
         ]
 
         self.model.operations = [
