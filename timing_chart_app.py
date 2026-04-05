@@ -1589,21 +1589,43 @@ class MainWindow(QMainWindow):
         middle1 = HierarchyItem(uid=2, id_number=1, name="搬送ユニット", level="middle", parent_uid=1)
         small1 = HierarchyItem(uid=3, id_number=1, name="Z軸", level="small", parent_uid=2, action_type="points")
         small2 = HierarchyItem(uid=4, id_number=2, name="吸着センサ", level="small", parent_uid=2, action_type="onoff")
-        large2 = HierarchyItem(uid=5, id_number=2, name="設備B", level="large", parent_uid=None)
-        middle2 = HierarchyItem(uid=6, id_number=1, name="検査ユニット", level="middle", parent_uid=5)
-        small3 = HierarchyItem(uid=7, id_number=1, name="検査シリンダ", level="small", parent_uid=6, action_type="points")
+        small3 = HierarchyItem(uid=8, id_number=3, name="クランプ", level="small", parent_uid=2, action_type="onoff")
 
-        self.model.hierarchy_items = [large1, middle1, small1, small2, large2, middle2, small3]
-        self.model.action_definitions = [
-            ActionDefinition(uid=1, small_item_uid=3, action_no=1, name="位置移動", points=["ポイント1", "ポイント2", "ポイント3"]),
-            ActionDefinition(uid=2, small_item_uid=4, action_no=1, name="検出", points=["OFF", "ON"]),
-            ActionDefinition(uid=3, small_item_uid=7, action_no=1, name="前進後退", points=["後退", "中間", "前進"]),
+        middle2 = HierarchyItem(uid=5, id_number=2, name="供給ユニット", level="middle", parent_uid=1)
+        small4 = HierarchyItem(uid=6, id_number=1, name="供給X軸", level="small", parent_uid=5, action_type="points")
+        small5 = HierarchyItem(uid=7, id_number=2, name="ワーク検知", level="small", parent_uid=5, action_type="onoff")
+
+        large2 = HierarchyItem(uid=9, id_number=2, name="設備B", level="large", parent_uid=None)
+        middle3 = HierarchyItem(uid=10, id_number=1, name="検査ユニット", level="middle", parent_uid=9)
+        small6 = HierarchyItem(uid=11, id_number=1, name="検査シリンダ", level="small", parent_uid=10, action_type="points")
+        small7 = HierarchyItem(uid=12, id_number=2, name="OK判定", level="small", parent_uid=10, action_type="onoff")
+
+        self.model.hierarchy_items = [
+            large1, middle1, small1, small2, small3,
+            middle2, small4, small5,
+            large2, middle3, small6, small7,
         ]
+
+        self.model.action_definitions = [
+            ActionDefinition(uid=1, small_item_uid=3, action_no=1, name="上昇", points=["原点", "待機", "上限"]),
+            ActionDefinition(uid=2, small_item_uid=3, action_no=2, name="下降", points=["原点", "待機", "上限"]),
+            ActionDefinition(uid=3, small_item_uid=4, action_no=1, name="吸着出力", points=["ON", "OFF"]),
+            ActionDefinition(uid=4, small_item_uid=8, action_no=1, name="クランプ出力", points=["ON", "OFF", "保持"]),
+            ActionDefinition(uid=5, small_item_uid=6, action_no=1, name="供給移動", points=["受取", "待機", "供給"]),
+            ActionDefinition(uid=6, small_item_uid=7, action_no=1, name="ワーク検知", points=["ON", "OFF"]),
+            ActionDefinition(uid=7, small_item_uid=11, action_no=1, name="前進後退", points=["後退", "中間", "前進"]),
+            ActionDefinition(uid=8, small_item_uid=12, action_no=1, name="判定出力", points=["ON", "OFF"]),
+        ]
+
         self.model.operations = [
-            OperationInstance(uid=1, action_uid=1, operation_mode="ポイント移動", time_mode="直値指定", duration_ms=1200, start_trigger="時刻0", start_operation_uid=None, end_mode="直値指定", end_trigger="終了", end_operation_uid=None, from_value="ポイント1", to_value="ポイント3"),
-            OperationInstance(uid=2, action_uid=2, operation_mode="ON-OFF", time_mode="直値指定", duration_ms=300, start_trigger="終了", start_operation_uid=1, end_mode="直値指定", end_trigger="終了", end_operation_uid=None, from_value="OFF", to_value="ON"),
-            OperationInstance(uid=3, action_uid=3, operation_mode="ポイント移動", time_mode="直値指定", duration_ms=900, start_trigger="開始", start_operation_uid=2, end_mode="直値指定", end_trigger="終了", end_operation_uid=None, from_value="後退", to_value="前進"),
-            OperationInstance(uid=4, action_uid=2, operation_mode="ON-OFF", time_mode="直値指定", duration_ms=300, start_trigger="終了", start_operation_uid=3, end_mode="直値指定", end_trigger="終了", end_operation_uid=None, from_value="ON", to_value="OFF"),
+            OperationInstance(uid=1, action_uid=1, name="Z軸 上昇", duration_ms=1200, start_trigger="manual", trigger_operation_uid=None, from_value="原点", to_value="上限"),
+            OperationInstance(uid=2, action_uid=3, name="吸着ON", duration_ms=300, start_trigger="after_finish", trigger_operation_uid=1, from_value="OFF", to_value="ON"),
+            OperationInstance(uid=3, action_uid=4, name="クランプON", duration_ms=200, start_trigger="after_finish", trigger_operation_uid=2, from_value="OFF", to_value="ON"),
+            OperationInstance(uid=4, action_uid=5, name="供給X 前進", duration_ms=900, start_trigger="after_start", trigger_operation_uid=3, from_value="待機", to_value="供給"),
+            OperationInstance(uid=5, action_uid=6, name="ワーク検知ON", duration_ms=150, start_trigger="after_finish", trigger_operation_uid=4, from_value="OFF", to_value="ON"),
+            OperationInstance(uid=6, action_uid=7, name="検査シリンダ前進", duration_ms=800, start_trigger="after_finish", trigger_operation_uid=5, from_value="後退", to_value="前進"),
+            OperationInstance(uid=7, action_uid=8, name="OK判定ON", duration_ms=250, start_trigger="after_finish", trigger_operation_uid=6, from_value="OFF", to_value="ON"),
+            OperationInstance(uid=8, action_uid=3, name="吸着OFF", duration_ms=300, start_trigger="after_finish", trigger_operation_uid=7, from_value="ON", to_value="OFF"),
         ]
 
 
