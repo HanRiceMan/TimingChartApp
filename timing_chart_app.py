@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional, Tuple
 from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem, QInputDialog
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal, QEvent
 from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QToolBar,
     QVBoxLayout,
     QWidget,
+    QStyledItemDelegate,
 )
 
 
@@ -67,10 +68,15 @@ class ActionDefinition:
 class OperationInstance:
     uid: int
     action_uid: int
-    name: str
-    duration_ms: int
-    start_trigger: str = "manual"  # manual / after_finish / after_start
-    trigger_operation_uid: Optional[int] = None
+    name: str = ""
+    duration_ms: int = 0
+    operation_mode: str = "ポイント移動"
+    time_mode: str = "直値指定"
+    start_trigger: str = "時刻0"
+    start_operation_uid: Optional[int] = None
+    end_mode: str = "直値指定"
+    end_trigger: str = "終了"
+    end_operation_uid: Optional[int] = None
     from_value: str = ""
     to_value: str = ""
 
@@ -156,6 +162,25 @@ class AppModel:
         small_type = small.action_type if small else ""
         return f"{large_part} / {middle_part} / {small_part} / {small_type} / 動作{a.action_no}:{a.name}"
 
+    def point_options_for_small(self, small_uid: int) -> List[str]:
+        small = self.get_hierarchy(small_uid)
+        if not small:
+            return []
+        if small.action_type == "onoff":
+            values = ["ON", "OFF"]
+            extras = []
+            for a in self.action_definitions:
+                if a.small_item_uid == small_uid:
+                    extras.extend([p for p in a.points if p not in values])
+            return values + extras
+        values = []
+        for a in sorted([x for x in self.action_definitions if x.small_item_uid == small_uid], key=lambda x: (x.action_no, x.uid)):
+            for p in a.points:
+                if p not in values:
+                    values.append(p)
+        return values
+
+
     # ---------- persistence ----------
     def to_dict(self) -> Dict:
         return {
@@ -239,13 +264,25 @@ class AppModel:
 
         for old in old_ops:
             uid = self.next_operation_uid()
+            start_trigger = old.get("start_trigger", "manual")
+            if start_trigger == "manual":
+                start_trigger_new = "時刻0"
+            elif start_trigger == "after_start":
+                start_trigger_new = "開始"
+            else:
+                start_trigger_new = "終了"
             self.operations.append(OperationInstance(
                 uid=uid,
                 action_uid=action_id_map.get(old["action_def_id"]),
-                name=old["name"],
-                duration_ms=old["duration_ms"],
-                start_trigger=old.get("start_trigger", "manual"),
-                trigger_operation_uid=None,  # set later
+                name=old.get("name", ""),
+                duration_ms=old.get("duration_ms", 0),
+                operation_mode="ポイント移動",
+                time_mode="直値指定",
+                start_trigger=start_trigger_new,
+                start_operation_uid=None,  # set later
+                end_mode="直値指定",
+                end_trigger="終了",
+                end_operation_uid=None,
                 from_value=old.get("from_value", ""),
                 to_value=old.get("to_value", ""),
             ))
@@ -255,7 +292,7 @@ class AppModel:
             old_to_new_op[old["id"]] = new.uid
         for old, new in zip(old_ops, self.operations):
             trig = old.get("trigger_operation_id")
-            new.trigger_operation_uid = old_to_new_op.get(trig) if trig is not None else None
+            new.start_operation_uid = old_to_new_op.get(trig) if trig is not None else None
 
     def clone_data(self) -> Dict:
         return copy.deepcopy(self.to_dict())
@@ -344,7 +381,7 @@ class HierarchyItemDialog(QDialog):
 class ActionDefinitionDialog(QDialog):
     def __init__(self, model: AppModel, action_def: Optional[ActionDefinition] = None, fixed_small_uid: Optional[int] = None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("動作")
+        self.setWindowTitle("ポイント")
         self.model = model
         self.action_def = action_def
 
@@ -367,8 +404,8 @@ class ActionDefinitionDialog(QDialog):
 
         form = QFormLayout(self)
         form.addRow("対象小項目", self.small_combo)
-        form.addRow("動作番号", self.action_no_edit)
-        form.addRow("動作", self.name_edit)
+        form.addRow("ポイント番号", self.action_no_edit)
+        form.addRow("ポイント", self.name_edit)
         form.addRow("ポイント一覧", self.points_edit)
         form.addRow("", self.points_hint)
 
@@ -401,22 +438,31 @@ class ActionDefinitionDialog(QDialog):
         small_uid = self.small_combo.currentData()
         small = self.model.get_hierarchy(int(small_uid)) if small_uid is not None else None
         is_points = bool(small and small.action_type == "points")
-        self.points_edit.setEnabled(is_points)
-        self.points_hint.setEnabled(is_points)
-        if not is_points:
-            self.points_edit.setText("")
+        self.points_edit.setEnabled(True)
+        self.points_hint.setEnabled(True)
+        if small and small.action_type == "onoff":
+            raw = [x.strip() for x in self.points_edit.text().split(",") if x.strip()]
+            rest = [x for x in raw if x not in ("ON", "OFF")]
+            self.points_edit.setText(", ".join(["ON", "OFF"] + rest))
+            self.points_hint.setText("onoff の場合は先頭2つを ON, OFF に固定します。追加ポイントは任意です。")
+        else:
+            self.points_hint.setText("points の場合のみ。例: 原点, 待機, 加工")
 
     def get_value(self):
         small_uid = int(self.small_combo.currentData())
         small = self.model.get_hierarchy(small_uid)
-        is_points = bool(small and small.action_type == "points")
-        points = [x.strip() for x in self.points_edit.text().split(",") if x.strip()] if is_points else ["OFF", "ON"]
+        raw_points = [x.strip() for x in self.points_edit.text().split(",") if x.strip()]
+        if small and small.action_type == "onoff":
+            points = ["ON", "OFF"] + [x for x in raw_points if x not in ("ON", "OFF")]
+        else:
+            points = raw_points
         return {
             "small_item_uid": small_uid,
             "action_no": int(self.action_no_edit.text().strip()),
             "name": self.name_edit.text().strip(),
             "points": points,
         }
+
 
 
 class OperationDialog(QDialog):
@@ -426,57 +472,99 @@ class OperationDialog(QDialog):
         self.model = model
         self.operation = operation
 
-        self.action_combo = QComboBox()
-        for a in sorted(self.model.action_definitions, key=lambda x: (self.model.hierarchy_path(x.small_item_uid), x.action_no, x.uid)):
-            self.action_combo.addItem(self.model.action_label(a.uid), a.uid)
+        self.large_combo = QComboBox()
+        self.middle_combo = QComboBox()
+        self.small_combo = QComboBox()
+        self.operation_mode_combo = QComboBox()
+        self.operation_mode_combo.addItems(["ポイント移動", "ON-OFF"])
+        self.time_mode_combo = QComboBox()
+        self.time_mode_combo.addItems(["直値指定"])
 
-        self.name_edit = QLineEdit()
         self.duration_edit = QLineEdit("1000")
 
-        self.trigger_combo = QComboBox()
-        self.trigger_combo.addItems(["manual", "after_finish", "after_start"])
+        self.start_trigger_combo = QComboBox()
+        self.start_trigger_combo.addItems(["時刻0", "開始", "終了"])
+        self.start_dep_combo = QComboBox()
 
-        self.dep_combo = QComboBox()
-        self.dep_combo.addItem("-", "")
-        for op in sorted(self.model.operations, key=lambda x: x.uid):
-            if operation and op.uid == operation.uid:
-                continue
-            self.dep_combo.addItem(f"{op.uid}: {op.name}", str(op.uid))
+        self.end_mode_combo = QComboBox()
+        self.end_mode_combo.addItems(["直値指定", "トリガ指定"])
+        self.end_trigger_combo = QComboBox()
+        self.end_trigger_combo.addItems(["時刻0", "開始", "終了"])
+        self.end_dep_combo = QComboBox()
 
         self.from_combo = QComboBox()
         self.to_combo = QComboBox()
 
+        self._load_large()
+        self._load_operation_refs()
+
         form = QFormLayout(self)
-        form.addRow("対象動作定義", self.action_combo)
-        form.addRow("設定名", self.name_edit)
+        form.addRow("大項目", self.large_combo)
+        form.addRow("中項目", self.middle_combo)
+        form.addRow("小項目", self.small_combo)
+        form.addRow("動作設定", self.operation_mode_combo)
+        form.addRow("時間設定", self.time_mode_combo)
         form.addRow("時間(ms)", self.duration_edit)
-        form.addRow("開始トリガ", self.trigger_combo)
-        form.addRow("依存先動作", self.dep_combo)
-        form.addRow("開始値 / 開始ポイント", self.from_combo)
-        form.addRow("終了値 / 終了ポイント", self.to_combo)
+        form.addRow("開始トリガ", self.start_trigger_combo)
+        form.addRow("開始依存元動作UID", self.start_dep_combo)
+        form.addRow("終了設定", self.end_mode_combo)
+        form.addRow("終了トリガ", self.end_trigger_combo)
+        form.addRow("終了依存元動作UID", self.end_dep_combo)
+        form.addRow("開始ポイント", self.from_combo)
+        form.addRow("終了ポイント", self.to_combo)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
 
-        self.action_combo.currentIndexChanged.connect(self._reload_values)
-        self.trigger_combo.currentTextChanged.connect(self._refresh_dep_enabled)
-        self._reload_values()
+        self.large_combo.currentIndexChanged.connect(self._load_middle)
+        self.middle_combo.currentIndexChanged.connect(self._load_small)
+        self.small_combo.currentIndexChanged.connect(self._reload_points)
+        self.start_trigger_combo.currentTextChanged.connect(self._refresh_dep_enabled)
+        self.end_mode_combo.currentTextChanged.connect(self._refresh_dep_enabled)
+        self.end_trigger_combo.currentTextChanged.connect(self._refresh_dep_enabled)
+
+        self._load_middle()
+        self._load_small()
+        self._reload_points()
         self._refresh_dep_enabled()
 
         if operation:
-            idx = self.action_combo.findData(operation.action_uid)
-            if idx >= 0:
-                self.action_combo.setCurrentIndex(idx)
-            self.name_edit.setText(operation.name)
+            action = self.model.get_action_def(operation.action_uid)
+            if action:
+                small = self.model.get_hierarchy(action.small_item_uid)
+                middle = self.model.get_middle_for_small(action.small_item_uid)
+                large = self.model.get_large_for_small(action.small_item_uid)
+                if large:
+                    idx = self.large_combo.findData(large.uid)
+                    if idx >= 0:
+                        self.large_combo.setCurrentIndex(idx)
+                self._load_middle()
+                if middle:
+                    idx = self.middle_combo.findData(middle.uid)
+                    if idx >= 0:
+                        self.middle_combo.setCurrentIndex(idx)
+                self._load_small()
+                if small:
+                    idx = self.small_combo.findData(small.uid)
+                    if idx >= 0:
+                        self.small_combo.setCurrentIndex(idx)
+            self.operation_mode_combo.setCurrentText(operation.operation_mode or "ポイント移動")
+            self.time_mode_combo.setCurrentText(operation.time_mode or "直値指定")
             self.duration_edit.setText(str(operation.duration_ms))
-            self.trigger_combo.setCurrentText(operation.start_trigger)
-            dep_val = "" if operation.trigger_operation_uid is None else str(operation.trigger_operation_uid)
-            didx = self.dep_combo.findData(dep_val)
-            if didx >= 0:
-                self.dep_combo.setCurrentIndex(didx)
-            self._reload_values()
+            self.start_trigger_combo.setCurrentText(operation.start_trigger or "時刻0")
+            sdep = "" if operation.start_operation_uid is None else str(operation.start_operation_uid)
+            idx = self.start_dep_combo.findData(sdep)
+            if idx >= 0:
+                self.start_dep_combo.setCurrentIndex(idx)
+            self.end_mode_combo.setCurrentText(operation.end_mode or "直値指定")
+            self.end_trigger_combo.setCurrentText(operation.end_trigger or "終了")
+            edep = "" if operation.end_operation_uid is None else str(operation.end_operation_uid)
+            idx = self.end_dep_combo.findData(edep)
+            if idx >= 0:
+                self.end_dep_combo.setCurrentIndex(idx)
+            self._reload_points()
             fidx = self.from_combo.findText(operation.from_value)
             if fidx >= 0:
                 self.from_combo.setCurrentIndex(fidx)
@@ -484,45 +572,95 @@ class OperationDialog(QDialog):
             if tidx >= 0:
                 self.to_combo.setCurrentIndex(tidx)
 
-    def _refresh_dep_enabled(self):
-        enabled = self.trigger_combo.currentText() != "manual"
-        self.dep_combo.setEnabled(enabled)
+    def _load_large(self):
+        self.large_combo.clear()
+        for x in sorted(self.model.children_of(None, "large"), key=lambda x: (x.id_number, x.uid)):
+            self.large_combo.addItem(f"{x.id_number} {x.name}", x.uid)
 
-    def _reload_values(self):
+    def _load_middle(self):
+        self.middle_combo.clear()
+        large_uid = self.large_combo.currentData()
+        for x in sorted(self.model.children_of(large_uid, "middle"), key=lambda x: (x.id_number, x.uid)):
+            self.middle_combo.addItem(f"{x.id_number} {x.name}", x.uid)
+
+    def _load_small(self):
+        self.small_combo.clear()
+        middle_uid = self.middle_combo.currentData()
+        for x in sorted(self.model.children_of(middle_uid, "small"), key=lambda x: (x.id_number, x.uid)):
+            self.small_combo.addItem(f"{x.id_number} {x.name}", x.uid)
+        self._reload_points()
+
+    def _load_operation_refs(self):
+        self.start_dep_combo.clear()
+        self.end_dep_combo.clear()
+        self.start_dep_combo.addItem("-", "")
+        self.end_dep_combo.addItem("-", "")
+        for op in sorted(self.model.operations, key=lambda x: x.uid):
+            if self.operation and op.uid == self.operation.uid:
+                continue
+            label = f"{op.uid}"
+            self.start_dep_combo.addItem(label, str(op.uid))
+            self.end_dep_combo.addItem(label, str(op.uid))
+
+    def _reload_points(self):
         self.from_combo.clear()
         self.to_combo.clear()
-        action_def = self.model.get_action_def(int(self.action_combo.currentData()))
-        values = []
-        if action_def:
-            small = self.model.get_hierarchy(action_def.small_item_uid)
-            values = ["OFF", "ON"] if (small and small.action_type == "onoff") else (action_def.points or ["P1", "P2"])
-        self.from_combo.addItems(values)
-        self.to_combo.addItems(values)
-        if len(values) >= 2:
+        small_uid = self.small_combo.currentData()
+        if small_uid is None:
+            return
+        vals = self.model.point_options_for_small(int(small_uid))
+        self.from_combo.addItems(vals)
+        self.to_combo.addItems(vals)
+        if vals:
             self.from_combo.setCurrentIndex(0)
-            self.to_combo.setCurrentIndex(min(1, len(values) - 1))
+            self.to_combo.setCurrentIndex(min(1, len(vals)-1))
+
+    def _refresh_dep_enabled(self):
+        self.start_dep_combo.setEnabled(self.start_trigger_combo.currentText() != "時刻0")
+        trig_end = self.end_mode_combo.currentText() == "トリガ指定"
+        self.end_trigger_combo.setEnabled(trig_end)
+        self.end_dep_combo.setEnabled(trig_end and self.end_trigger_combo.currentText() != "時刻0")
+        self.duration_edit.setEnabled(not trig_end)
 
     def get_value(self):
-        action_uid = int(self.action_combo.currentData())
-        name = self.name_edit.text().strip()
-        duration_ms = max(0, int(self.duration_edit.text().strip() or "0"))
-        start_trigger = self.trigger_combo.currentText()
-        raw_dep = self.dep_combo.currentData()
-        dep_uid = int(raw_dep) if start_trigger != "manual" and raw_dep not in ("", None) else None
-        from_value = self.from_combo.currentText()
-        to_value = self.to_combo.currentText()
-        return action_uid, name, duration_ms, start_trigger, dep_uid, from_value, to_value
+        small_uid = int(self.small_combo.currentData())
+        actions = sorted([a for a in self.model.action_definitions if a.small_item_uid == small_uid], key=lambda x: (x.action_no, x.uid))
+        action_uid = actions[0].uid if actions else None
+        start_dep_raw = self.start_dep_combo.currentData()
+        end_dep_raw = self.end_dep_combo.currentData()
+        return {
+            "action_uid": action_uid,
+            "operation_mode": self.operation_mode_combo.currentText(),
+            "time_mode": self.time_mode_combo.currentText(),
+            "duration_ms": int(self.duration_edit.text().strip() or "0"),
+            "start_trigger": self.start_trigger_combo.currentText(),
+            "start_operation_uid": int(start_dep_raw) if start_dep_raw not in ("", None) else None,
+            "end_mode": self.end_mode_combo.currentText(),
+            "end_trigger": self.end_trigger_combo.currentText(),
+            "end_operation_uid": int(end_dep_raw) if end_dep_raw not in ("", None) else None,
+            "from_value": self.from_combo.currentText(),
+            "to_value": self.to_combo.currentText(),
+        }
 
 
 # =========================
 # Schedule calculation
 # =========================
 
+
 def calculate_schedule(model: AppModel) -> Tuple[Dict[int, Tuple[int, int]], List[str]]:
     ops = {op.uid: op for op in model.operations}
     errors = []
     visiting = set()
     visited = set()
+
+    def deps_of(op):
+        deps = []
+        if op.start_trigger != "時刻0" and op.start_operation_uid in ops:
+            deps.append(op.start_operation_uid)
+        if op.end_mode == "トリガ指定" and op.end_trigger != "時刻0" and op.end_operation_uid in ops:
+            deps.append(op.end_operation_uid)
+        return deps
 
     def dfs(op_uid: int):
         if op_uid in visiting:
@@ -531,8 +669,8 @@ def calculate_schedule(model: AppModel) -> Tuple[Dict[int, Tuple[int, int]], Lis
             return
         visiting.add(op_uid)
         op = ops[op_uid]
-        if op.trigger_operation_uid is not None and op.trigger_operation_uid in ops:
-            dfs(op.trigger_operation_uid)
+        for dep in deps_of(op):
+            dfs(dep)
         visiting.remove(op_uid)
         visited.add(op_uid)
 
@@ -544,21 +682,37 @@ def calculate_schedule(model: AppModel) -> Tuple[Dict[int, Tuple[int, int]], Lis
 
     memo: Dict[int, Tuple[int, int]] = {}
 
+    def anchor_time(ref_uid: Optional[int], trig: str) -> Optional[int]:
+        if trig == "時刻0":
+            return 0
+        if ref_uid is None:
+            return None
+        ref = ops.get(ref_uid)
+        if ref is None:
+            return None
+        s, e = calc(ref.uid)
+        return s if trig == "開始" else e
+
     def calc(op_uid: int) -> Tuple[int, int]:
         if op_uid in memo:
             return memo[op_uid]
         op = ops[op_uid]
-        if op.start_trigger == "manual" or op.trigger_operation_uid is None:
+        start = anchor_time(op.start_operation_uid, op.start_trigger)
+        if start is None:
+            errors.append(f"動作UID {op.uid}: 開始依存元 {op.start_operation_uid} が見つかりません")
             start = 0
+
+        if op.end_mode == "トリガ指定":
+            end = anchor_time(op.end_operation_uid, op.end_trigger)
+            if end is None:
+                errors.append(f"動作UID {op.uid}: 終了依存元 {op.end_operation_uid} が見つかりません")
+                end = start + max(0, op.duration_ms)
         else:
-            pred = ops.get(op.trigger_operation_uid)
-            if pred is None:
-                errors.append(f"動作UID {op.uid}: 依存先 {op.trigger_operation_uid} が見つかりません")
-                start = 0
-            else:
-                p_start, p_end = calc(pred.uid)
-                start = p_end if op.start_trigger == "after_finish" else p_start
-        end = start + max(0, op.duration_ms)
+            end = start + max(0, op.duration_ms)
+
+        if end < start:
+            end = start
+
         memo[op_uid] = (start, end)
         return memo[op_uid]
 
@@ -730,13 +884,13 @@ class TimingChartView(QGraphicsView):
             op_anchor[op.uid] = {"start": QPointF(x1, y1), "end": QPointF(x2, y2)}
 
         for op in model.operations:
-            if op.trigger_operation_uid is None:
+            if op.start_operation_uid is None and not (op.end_mode == "トリガ指定" and op.end_operation_uid is not None):
                 continue
-            if op.trigger_operation_uid not in op_anchor or op.uid not in op_anchor:
+            if op.start_operation_uid not in op_anchor or op.uid not in op_anchor:
                 continue
 
-            src_key = "end" if op.start_trigger == "after_finish" else "start"
-            p1 = op_anchor[op.trigger_operation_uid][src_key]
+            src_key = "end" if op.start_trigger == "終了" else "start"
+            p1 = op_anchor[op.start_operation_uid][src_key]
             p2 = op_anchor[op.uid]["start"]
 
             line = scene.addLine(p1.x(), p1.y(), p2.x(), p2.y(), QPen(QColor(180, 70, 50), 2))
@@ -764,6 +918,19 @@ class TimingChartView(QGraphicsView):
 
 
 
+
+class ClearSelectionTreeWidget(QTreeWidget):
+    def mousePressEvent(self, event):
+        item = self.itemAt(event.pos())
+        current = self.currentItem()
+        if item is None or item == current:
+            self.clearSelection()
+            self.setCurrentItem(None)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
 class DeviceTab(QWidget):
     model_about_to_change = Signal(str)
     model_changed = Signal()
@@ -774,9 +941,9 @@ class DeviceTab(QWidget):
 
         layout = QVBoxLayout(self)
 
-        self.tree = QTreeWidget()
+        self.tree = ClearSelectionTreeWidget()
         self.tree.setColumnCount(3)
-        self.tree.setHeaderLabels(["項目", "動作種別", "動作"])
+        self.tree.setHeaderLabels(["項目", "動作種別", "ポイント"])
         self.tree.header().setSectionResizeMode(0, QHeaderView.Interactive)
         self.tree.header().setSectionResizeMode(1, QHeaderView.Interactive)
         self.tree.header().setSectionResizeMode(2, QHeaderView.Interactive)
@@ -786,16 +953,16 @@ class DeviceTab(QWidget):
         self.tree.setAlternatingRowColors(True)
         layout.addWidget(self.tree)
 
-        note = QLabel("※ 大項目 → 中項目 → 小項目の階層で表示します。動作は小項目に紐づいて右側に表示します。")
+        note = QLabel("※ 大項目 → 中項目 → 小項目の階層で表示します。ポイントは小項目に紐づいて右側に表示します。")
         layout.addWidget(note)
 
         btn_row = QHBoxLayout()
         self.add_device_btn = QPushButton("機器追加")
         self.edit_device_btn = QPushButton("機器編集")
         self.del_device_btn = QPushButton("機器削除")
-        self.add_action_btn = QPushButton("動作追加")
-        self.edit_action_btn = QPushButton("動作編集")
-        self.del_action_btn = QPushButton("動作削除")
+        self.add_action_btn = QPushButton("ポイント追加")
+        self.edit_action_btn = QPushButton("ポイント編集")
+        self.del_action_btn = QPushButton("ポイント削除")
         btn_row.addWidget(self.add_device_btn)
         btn_row.addWidget(self.edit_device_btn)
         btn_row.addWidget(self.del_device_btn)
@@ -859,12 +1026,12 @@ class DeviceTab(QWidget):
     def _choose_action_for_small(self, small_uid: int) -> Optional[int]:
         actions = sorted([a for a in self.model.action_definitions if a.small_item_uid == small_uid], key=lambda x: (x.action_no, x.uid))
         if not actions:
-            QMessageBox.information(self, "動作なし", "この小項目には動作がありません。")
+            QMessageBox.information(self, "ポイントなし", "この小項目にはポイントがありません。")
             return None
         if len(actions) == 1:
             return actions[0].uid
         labels = [f"{a.action_no} / {a.name}" for a in actions]
-        selected, ok = QInputDialog.getItem(self, "動作選択", "対象動作を選択してください", labels, 0, False)
+        selected, ok = QInputDialog.getItem(self, "ポイント選択", "対象ポイントを選択してください", labels, 0, False)
         if not ok:
             return None
         return actions[labels.index(selected)].uid
@@ -888,14 +1055,17 @@ class DeviceTab(QWidget):
                 return
 
             self.model_about_to_change.emit("機器追加")
+            new_uid = self.model.next_hierarchy_uid()
             self.model.hierarchy_items.append(HierarchyItem(
-                uid=self.model.next_hierarchy_uid(),
+                uid=new_uid,
                 id_number=value["id_number"],
                 name=value["name"],
                 level=value["level"],
                 parent_uid=value["parent_uid"],
                 action_type=value["action_type"],
             ))
+            if value["level"] == "small" and value["action_type"] == "onoff":
+                self._initialize_onoff_points(new_uid)
             self.refresh()
             self.model_changed.emit()
 
@@ -930,6 +1100,8 @@ class DeviceTab(QWidget):
             item.level = value["level"]
             item.parent_uid = value["parent_uid"]
             item.action_type = value["action_type"]
+            if item.level == "small" and item.action_type == "onoff":
+                self._initialize_onoff_points(item.uid)
             self.refresh()
             self.model_changed.emit()
 
@@ -954,22 +1126,48 @@ class DeviceTab(QWidget):
         self.refresh()
         self.model_changed.emit()
 
+
+    def _initialize_onoff_points(self, small_uid: int):
+        actions = sorted([a for a in self.model.action_definitions if a.small_item_uid == small_uid], key=lambda x: (x.action_no, x.uid))
+        if not actions:
+            self.model.action_definitions.append(ActionDefinition(
+                uid=self.model.next_action_uid(),
+                small_item_uid=small_uid,
+                action_no=1,
+                name="ON",
+                points=["ON", "OFF"],
+            ))
+            return
+        first = actions[0]
+        extras = []
+        for a in actions:
+            for p in a.points:
+                if p not in ("ON", "OFF"):
+                    extras.append(p)
+        first.action_no = 1
+        first.name = "ON"
+        first.points = ["ON", "OFF"] + [x for x in extras if x not in ("ON", "OFF")]
+        for idx, a in enumerate(actions[1:], start=2):
+            a.action_no = idx
+            if a.name in ("ON","OFF"):
+                a.name = f"追加{idx-1}"
+
     def add_action(self):
         small_uid = self._selected_small_uid()
         if small_uid is None:
-            QMessageBox.information(self, "選択", "動作追加は小項目を選択して実行してください。")
+            QMessageBox.information(self, "選択", "ポイント追加は小項目を選択して実行してください。")
             return
         dlg = ActionDefinitionDialog(self.model, fixed_small_uid=small_uid, parent=self)
         if dlg.exec():
             try:
                 value = dlg.get_value()
             except ValueError:
-                QMessageBox.warning(self, "入力エラー", "動作番号は数値で入力してください。")
+                QMessageBox.warning(self, "入力エラー", "ポイント番号は数値で入力してください。")
                 return
             if not value["name"]:
-                QMessageBox.warning(self, "入力不足", "動作名を入力してください。")
+                QMessageBox.warning(self, "入力不足", "ポイント名を入力してください。")
                 return
-            self.model_about_to_change.emit("動作追加")
+            self.model_about_to_change.emit("ポイント追加")
             self.model.action_definitions.append(ActionDefinition(
                 uid=self.model.next_action_uid(),
                 small_item_uid=value["small_item_uid"],
@@ -983,7 +1181,7 @@ class DeviceTab(QWidget):
     def edit_action(self):
         small_uid = self._selected_small_uid()
         if small_uid is None:
-            QMessageBox.information(self, "選択", "動作編集は小項目を選択して実行してください。")
+            QMessageBox.information(self, "選択", "ポイント編集は小項目を選択して実行してください。")
             return
         action_uid = self._choose_action_for_small(small_uid)
         if action_uid is None:
@@ -996,12 +1194,12 @@ class DeviceTab(QWidget):
             try:
                 value = dlg.get_value()
             except ValueError:
-                QMessageBox.warning(self, "入力エラー", "動作番号は数値で入力してください。")
+                QMessageBox.warning(self, "入力エラー", "ポイント番号は数値で入力してください。")
                 return
             if not value["name"]:
-                QMessageBox.warning(self, "入力不足", "動作名を入力してください。")
+                QMessageBox.warning(self, "入力不足", "ポイント名を入力してください。")
                 return
-            self.model_about_to_change.emit("動作編集")
+            self.model_about_to_change.emit("ポイント編集")
             action.small_item_uid = value["small_item_uid"]
             action.action_no = value["action_no"]
             action.name = value["name"]
@@ -1012,16 +1210,17 @@ class DeviceTab(QWidget):
     def delete_action(self):
         small_uid = self._selected_small_uid()
         if small_uid is None:
-            QMessageBox.information(self, "選択", "動作削除は小項目を選択して実行してください。")
+            QMessageBox.information(self, "選択", "ポイント削除は小項目を選択して実行してください。")
             return
         action_uid = self._choose_action_for_small(small_uid)
         if action_uid is None:
             return
-        self.model_about_to_change.emit("動作削除")
+        self.model_about_to_change.emit("ポイント削除")
         self.model.operations = [op for op in self.model.operations if op.action_uid != action_uid]
         self.model.action_definitions = [a for a in self.model.action_definitions if a.uid != action_uid]
         self.refresh()
         self.model_changed.emit()
+
 
 
 class OperationsTab(QWidget):
@@ -1033,11 +1232,14 @@ class OperationsTab(QWidget):
         self.model = model
 
         layout = QVBoxLayout(self)
-        self.table = QTableWidget(0, 8)
+        self.table = QTableWidget(0, 14)
         self.table.setHorizontalHeaderLabels([
-            "動作UID", "対象", "設定名", "時間(ms)", "開始トリガ", "依存先動作UID", "開始値", "終了値"
+            "動作UID", "大項目", "中項目", "小項目", "動作設定", "時間設定", "時間(ms)",
+            "開始トリガ", "開始依存元動作UID", "終了設定", "終了トリガ", "終了依存元動作UID",
+            "開始ポイント", "終了ポイント"
         ])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        for i in range(14):
+            self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.Interactive)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         layout.addWidget(self.table)
 
@@ -1053,15 +1255,6 @@ class OperationsTab(QWidget):
         btn_row.addWidget(self.refresh_btn)
         layout.addLayout(btn_row)
 
-        help_box = QGroupBox("設定ルール")
-        help_layout = QVBoxLayout(help_box)
-        help_layout.addWidget(QLabel(
-            "manual: 時刻0から開始\n"
-            "after_finish: 指定した動作の完了後に開始\n"
-            "after_start: 指定した動作の開始と同時に開始"
-        ))
-        layout.addWidget(help_box)
-
         self.add_btn.clicked.connect(self.add_operation)
         self.edit_btn.clicked.connect(self.edit_operation)
         self.del_btn.clicked.connect(self.delete_operation)
@@ -1073,14 +1266,23 @@ class OperationsTab(QWidget):
         ops = sorted(self.model.operations, key=lambda x: x.uid)
         self.table.setRowCount(len(ops))
         for r, op in enumerate(ops):
-            dep = "-" if op.trigger_operation_uid is None else str(op.trigger_operation_uid)
+            action = self.model.get_action_def(op.action_uid)
+            small = self.model.get_hierarchy(action.small_item_uid) if action else None
+            middle = self.model.get_middle_for_small(action.small_item_uid) if action else None
+            large = self.model.get_large_for_small(action.small_item_uid) if action else None
             vals = [
                 str(op.uid),
-                self.model.action_label(op.action_uid),
-                op.name,
+                f"{large.id_number} {large.name}" if large else "",
+                f"{middle.id_number} {middle.name}" if middle else "",
+                f"{small.id_number} {small.name}" if small else "",
+                op.operation_mode,
+                op.time_mode,
                 str(op.duration_ms),
                 op.start_trigger,
-                dep,
+                "-" if op.start_operation_uid is None else str(op.start_operation_uid),
+                op.end_mode,
+                op.end_trigger if op.end_mode == "トリガ指定" else "-",
+                "-" if op.end_operation_uid is None else str(op.end_operation_uid),
                 op.from_value,
                 op.to_value,
             ]
@@ -1097,29 +1299,33 @@ class OperationsTab(QWidget):
         return item.data(Qt.UserRole) if item else None
 
     def add_operation(self):
-        if not self.model.action_definitions:
-            QMessageBox.warning(self, "項目不足", "先に機器一覧で動作を作成してください。")
+        if not self.model.small_items():
+            QMessageBox.warning(self, "項目不足", "先に機器一覧で小項目とポイントを設定してください。")
             return
         dlg = OperationDialog(self.model, parent=self)
         if dlg.exec():
             try:
-                action_uid, name, duration_ms, start_trigger, dep_uid, from_value, to_value = dlg.get_value()
+                value = dlg.get_value()
             except ValueError:
                 QMessageBox.warning(self, "入力エラー", "時間(ms)は数値で入力してください。")
                 return
-            if not name:
-                QMessageBox.warning(self, "入力不足", "設定名を入力してください。")
+            if value["action_uid"] is None:
+                QMessageBox.warning(self, "入力不足", "対象小項目にポイントが必要です。")
                 return
             self.model_about_to_change.emit("動作追加")
             self.model.operations.append(OperationInstance(
                 uid=self.model.next_operation_uid(),
-                action_uid=action_uid,
-                name=name,
-                duration_ms=duration_ms,
-                start_trigger=start_trigger,
-                trigger_operation_uid=dep_uid,
-                from_value=from_value,
-                to_value=to_value,
+                action_uid=value["action_uid"],
+                operation_mode=value["operation_mode"],
+                time_mode=value["time_mode"],
+                duration_ms=value["duration_ms"],
+                start_trigger=value["start_trigger"],
+                start_operation_uid=value["start_operation_uid"],
+                end_mode=value["end_mode"],
+                end_trigger=value["end_trigger"],
+                end_operation_uid=value["end_operation_uid"],
+                from_value=value["from_value"],
+                to_value=value["to_value"],
             ))
             self.refresh()
             self.model_changed.emit()
@@ -1134,18 +1340,22 @@ class OperationsTab(QWidget):
         dlg = OperationDialog(self.model, operation=op, parent=self)
         if dlg.exec():
             try:
-                action_uid, name, duration_ms, start_trigger, dep_uid, from_value, to_value = dlg.get_value()
+                value = dlg.get_value()
             except ValueError:
                 QMessageBox.warning(self, "入力エラー", "時間(ms)は数値で入力してください。")
                 return
             self.model_about_to_change.emit("動作編集")
-            op.action_uid = action_uid
-            op.name = name
-            op.duration_ms = duration_ms
-            op.start_trigger = start_trigger
-            op.trigger_operation_uid = dep_uid
-            op.from_value = from_value
-            op.to_value = to_value
+            op.action_uid = value["action_uid"]
+            op.operation_mode = value["operation_mode"]
+            op.time_mode = value["time_mode"]
+            op.duration_ms = value["duration_ms"]
+            op.start_trigger = value["start_trigger"]
+            op.start_operation_uid = value["start_operation_uid"]
+            op.end_mode = value["end_mode"]
+            op.end_trigger = value["end_trigger"]
+            op.end_operation_uid = value["end_operation_uid"]
+            op.from_value = value["from_value"]
+            op.to_value = value["to_value"]
             self.refresh()
             self.model_changed.emit()
 
@@ -1155,9 +1365,12 @@ class OperationsTab(QWidget):
             return
         self.model_about_to_change.emit("動作削除")
         for op in self.model.operations:
-            if op.trigger_operation_uid == op_uid:
-                op.trigger_operation_uid = None
-                op.start_trigger = "manual"
+            if op.start_operation_uid == op_uid:
+                op.start_operation_uid = None
+                op.start_trigger = "時刻0"
+            if op.end_operation_uid == op_uid:
+                op.end_operation_uid = None
+                op.end_mode = "直値指定"
         self.model.operations = [op for op in self.model.operations if op.uid != op_uid]
         self.refresh()
         self.model_changed.emit()
@@ -1204,17 +1417,17 @@ class ChartTab(QWidget):
         answer = QMessageBox.question(
             self,
             "依存設定",
-            f"動作UID {source_uid} → 動作UID {target_uid} の依存を設定しますか？\n"
-            "はい: 完了後に開始\n"
-            "いいえ: 開始と同時に開始",
+            f"動作UID {source_uid} → 動作UID {target_uid} の開始依存を設定しますか？\n"
+            "はい: 元動作の終了で開始\n"
+            "いいえ: 元動作の開始で開始",
             QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
         )
         if answer == QMessageBox.Cancel:
             return
 
         self.model_about_to_change.emit("依存関係設定")
-        target.trigger_operation_uid = source_uid
-        target.start_trigger = "after_finish" if answer == QMessageBox.Yes else "after_start"
+        target.start_operation_uid = source_uid
+        target.start_trigger = "終了" if answer == QMessageBox.Yes else "開始"
         self.refresh()
         self.model_changed.emit()
 
@@ -1387,10 +1600,10 @@ class MainWindow(QMainWindow):
             ActionDefinition(uid=3, small_item_uid=7, action_no=1, name="前進後退", points=["後退", "中間", "前進"]),
         ]
         self.model.operations = [
-            OperationInstance(uid=1, action_uid=1, name="Z軸 上昇", duration_ms=1200, start_trigger="manual", trigger_operation_uid=None, from_value="ポイント1", to_value="ポイント3"),
-            OperationInstance(uid=2, action_uid=2, name="吸着ON", duration_ms=300, start_trigger="after_finish", trigger_operation_uid=1, from_value="OFF", to_value="ON"),
-            OperationInstance(uid=3, action_uid=3, name="検査前進", duration_ms=900, start_trigger="after_start", trigger_operation_uid=2, from_value="後退", to_value="前進"),
-            OperationInstance(uid=4, action_uid=2, name="吸着OFF", duration_ms=300, start_trigger="after_finish", trigger_operation_uid=3, from_value="ON", to_value="OFF"),
+            OperationInstance(uid=1, action_uid=1, operation_mode="ポイント移動", time_mode="直値指定", duration_ms=1200, start_trigger="時刻0", start_operation_uid=None, end_mode="直値指定", end_trigger="終了", end_operation_uid=None, from_value="ポイント1", to_value="ポイント3"),
+            OperationInstance(uid=2, action_uid=2, operation_mode="ON-OFF", time_mode="直値指定", duration_ms=300, start_trigger="終了", start_operation_uid=1, end_mode="直値指定", end_trigger="終了", end_operation_uid=None, from_value="OFF", to_value="ON"),
+            OperationInstance(uid=3, action_uid=3, operation_mode="ポイント移動", time_mode="直値指定", duration_ms=900, start_trigger="開始", start_operation_uid=2, end_mode="直値指定", end_trigger="終了", end_operation_uid=None, from_value="後退", to_value="前進"),
+            OperationInstance(uid=4, action_uid=2, operation_mode="ON-OFF", time_mode="直値指定", duration_ms=300, start_trigger="終了", start_operation_uid=3, end_mode="直値指定", end_trigger="終了", end_operation_uid=None, from_value="ON", to_value="OFF"),
         ]
 
 
