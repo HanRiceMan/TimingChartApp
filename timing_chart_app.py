@@ -167,18 +167,43 @@ class AppModel:
         if not small:
             return []
         if small.action_type == "onoff":
-            values = ["ON", "OFF"]
-            extras = []
-            for a in self.action_definitions:
-                if a.small_item_uid == small_uid:
-                    extras.extend([p for p in a.points if p not in values])
-            return values + extras
+            return ["ON", "OFF"]
         values = []
         for a in sorted([x for x in self.action_definitions if x.small_item_uid == small_uid], key=lambda x: (x.action_no, x.uid)):
             for p in a.points:
                 if p not in values:
                     values.append(p)
         return values
+
+
+    def normalize_onoff_points(self):
+        for small in self.small_items():
+            if small.action_type != "onoff":
+                continue
+            actions = sorted(
+                [a for a in self.action_definitions if a.small_item_uid == small.uid],
+                key=lambda x: (x.action_no, x.uid)
+            )
+            if not actions:
+                self.action_definitions.append(ActionDefinition(
+                    uid=self.next_action_uid(),
+                    small_item_uid=small.uid,
+                    action_no=1,
+                    name="ON",
+                    points=["ON", "OFF"],
+                ))
+                continue
+            first = actions[0]
+            first.action_no = 1
+            first.name = "ON"
+            first.points = ["ON", "OFF"]
+            for idx, a in enumerate(actions[1:], start=2):
+                a.action_no = idx
+                if idx == 2:
+                    a.name = "OFF"
+                elif a.name in ("ON", "OFF"):
+                    a.name = f"追加{idx-2}"
+                a.points = ["ON", "OFF"]
 
 
     # ---------- persistence ----------
@@ -196,6 +221,7 @@ class AppModel:
             self.hierarchy_items = [HierarchyItem(**x) for x in data.get("hierarchy_items", [])]
             self.action_definitions = [ActionDefinition(**x) for x in data.get("action_definitions", [])]
             self.operations = [OperationInstance(**x) for x in data.get("operations", [])]
+            self.normalize_onoff_points()
             return
 
         # backward compatibility for old schema
@@ -293,6 +319,8 @@ class AppModel:
         for old, new in zip(old_ops, self.operations):
             trig = old.get("trigger_operation_id")
             new.start_operation_uid = old_to_new_op.get(trig) if trig is not None else None
+
+        self.normalize_onoff_points()
 
     def clone_data(self) -> Dict:
         return copy.deepcopy(self.to_dict())
@@ -441,10 +469,8 @@ class ActionDefinitionDialog(QDialog):
         self.points_edit.setEnabled(True)
         self.points_hint.setEnabled(True)
         if small and small.action_type == "onoff":
-            raw = [x.strip() for x in self.points_edit.text().split(",") if x.strip()]
-            rest = [x for x in raw if x not in ("ON", "OFF")]
-            self.points_edit.setText(", ".join(["ON", "OFF"] + rest))
-            self.points_hint.setText("onoff の場合は先頭2つを ON, OFF に固定します。追加ポイントは任意です。")
+            self.points_edit.setText("ON, OFF")
+            self.points_hint.setText("onoff の場合は 1:ON, 2:OFF に固定です。")
         else:
             self.points_hint.setText("points の場合のみ。例: 原点, 待機, 加工")
 
@@ -453,7 +479,7 @@ class ActionDefinitionDialog(QDialog):
         small = self.model.get_hierarchy(small_uid)
         raw_points = [x.strip() for x in self.points_edit.text().split(",") if x.strip()]
         if small and small.action_type == "onoff":
-            points = ["ON", "OFF"] + [x for x in raw_points if x not in ("ON", "OFF")]
+            points = ["ON", "OFF"]
         else:
             points = raw_points
         return {
@@ -1128,7 +1154,10 @@ class DeviceTab(QWidget):
 
 
     def _initialize_onoff_points(self, small_uid: int):
-        actions = sorted([a for a in self.model.action_definitions if a.small_item_uid == small_uid], key=lambda x: (x.action_no, x.uid))
+        actions = sorted(
+            [a for a in self.model.action_definitions if a.small_item_uid == small_uid],
+            key=lambda x: (x.action_no, x.uid)
+        )
         if not actions:
             self.model.action_definitions.append(ActionDefinition(
                 uid=self.model.next_action_uid(),
@@ -1139,18 +1168,16 @@ class DeviceTab(QWidget):
             ))
             return
         first = actions[0]
-        extras = []
-        for a in actions:
-            for p in a.points:
-                if p not in ("ON", "OFF"):
-                    extras.append(p)
         first.action_no = 1
         first.name = "ON"
-        first.points = ["ON", "OFF"] + [x for x in extras if x not in ("ON", "OFF")]
+        first.points = ["ON", "OFF"]
         for idx, a in enumerate(actions[1:], start=2):
             a.action_no = idx
-            if a.name in ("ON","OFF"):
-                a.name = f"追加{idx-1}"
+            if idx == 2:
+                a.name = "OFF"
+            elif a.name in ("ON", "OFF"):
+                a.name = f"追加{idx-2}"
+            a.points = ["ON", "OFF"]
 
     def add_action(self):
         small_uid = self._selected_small_uid()
@@ -1175,6 +1202,7 @@ class DeviceTab(QWidget):
                 name=value["name"],
                 points=value["points"],
             ))
+            self.model.normalize_onoff_points()
             self.refresh()
             self.model_changed.emit()
 
@@ -1204,6 +1232,7 @@ class DeviceTab(QWidget):
             action.action_no = value["action_no"]
             action.name = value["name"]
             action.points = value["points"]
+            self.model.normalize_onoff_points()
             self.refresh()
             self.model_changed.emit()
 
@@ -1609,12 +1638,12 @@ class MainWindow(QMainWindow):
         self.model.action_definitions = [
             ActionDefinition(uid=1, small_item_uid=3, action_no=1, name="上昇", points=["原点", "待機", "上限"]),
             ActionDefinition(uid=2, small_item_uid=3, action_no=2, name="下降", points=["原点", "待機", "上限"]),
-            ActionDefinition(uid=3, small_item_uid=4, action_no=1, name="吸着出力", points=["ON", "OFF"]),
-            ActionDefinition(uid=4, small_item_uid=8, action_no=1, name="クランプ出力", points=["ON", "OFF"]),
+            ActionDefinition(uid=3, small_item_uid=4, action_no=1, name="ON", points=["ON", "OFF"]),
+            ActionDefinition(uid=4, small_item_uid=8, action_no=1, name="ON", points=["ON", "OFF"]),
             ActionDefinition(uid=5, small_item_uid=6, action_no=1, name="供給移動", points=["受取", "待機", "供給"]),
-            ActionDefinition(uid=6, small_item_uid=7, action_no=1, name="ワーク検知", points=["ON", "OFF"]),
+            ActionDefinition(uid=6, small_item_uid=7, action_no=1, name="ON", points=["ON", "OFF"]),
             ActionDefinition(uid=7, small_item_uid=11, action_no=1, name="前進後退", points=["後退", "中間", "前進"]),
-            ActionDefinition(uid=8, small_item_uid=12, action_no=1, name="判定出力", points=["ON", "OFF"]),
+            ActionDefinition(uid=8, small_item_uid=12, action_no=1, name="ON", points=["ON", "OFF"]),
         ]
 
         self.model.operations = [
@@ -1675,6 +1704,7 @@ class MainWindow(QMainWindow):
                 from_value="ON", to_value="OFF",
             ),
         ]
+        self.model.normalize_onoff_points()
 
 
 def main():
