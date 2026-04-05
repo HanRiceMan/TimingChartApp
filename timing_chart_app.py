@@ -532,7 +532,6 @@ class OperationDialog(QDialog):
         self.to_combo = QComboBox()
 
         self._load_large()
-        self._load_operation_refs()
 
         form = QFormLayout(self)
         form.addRow("動作UID", self.uid_edit)
