@@ -1618,14 +1618,62 @@ class MainWindow(QMainWindow):
         ]
 
         self.model.operations = [
-            OperationInstance(uid=1, action_uid=1, name="Z軸 上昇", duration_ms=1200, start_trigger="manual", trigger_operation_uid=None, from_value="原点", to_value="上限"),
-            OperationInstance(uid=2, action_uid=3, name="吸着ON", duration_ms=300, start_trigger="after_finish", trigger_operation_uid=1, from_value="OFF", to_value="ON"),
-            OperationInstance(uid=3, action_uid=4, name="クランプON", duration_ms=200, start_trigger="after_finish", trigger_operation_uid=2, from_value="OFF", to_value="ON"),
-            OperationInstance(uid=4, action_uid=5, name="供給X 前進", duration_ms=900, start_trigger="after_start", trigger_operation_uid=3, from_value="待機", to_value="供給"),
-            OperationInstance(uid=5, action_uid=6, name="ワーク検知ON", duration_ms=150, start_trigger="after_finish", trigger_operation_uid=4, from_value="OFF", to_value="ON"),
-            OperationInstance(uid=6, action_uid=7, name="検査シリンダ前進", duration_ms=800, start_trigger="after_finish", trigger_operation_uid=5, from_value="後退", to_value="前進"),
-            OperationInstance(uid=7, action_uid=8, name="OK判定ON", duration_ms=250, start_trigger="after_finish", trigger_operation_uid=6, from_value="OFF", to_value="ON"),
-            OperationInstance(uid=8, action_uid=3, name="吸着OFF", duration_ms=300, start_trigger="after_finish", trigger_operation_uid=7, from_value="ON", to_value="OFF"),
+            OperationInstance(
+                uid=1, action_uid=1, duration_ms=1200,
+                operation_mode="ポイント移動", time_mode="直値指定",
+                start_trigger="時刻0", start_operation_uid=None,
+                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
+                from_value="原点", to_value="上限",
+            ),
+            OperationInstance(
+                uid=2, action_uid=3, duration_ms=300,
+                operation_mode="ON-OFF", time_mode="直値指定",
+                start_trigger="終了", start_operation_uid=1,
+                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
+                from_value="OFF", to_value="ON",
+            ),
+            OperationInstance(
+                uid=3, action_uid=4, duration_ms=200,
+                operation_mode="ON-OFF", time_mode="直値指定",
+                start_trigger="終了", start_operation_uid=2,
+                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
+                from_value="OFF", to_value="ON",
+            ),
+            OperationInstance(
+                uid=4, action_uid=5, duration_ms=900,
+                operation_mode="ポイント移動", time_mode="直値指定",
+                start_trigger="開始", start_operation_uid=3,
+                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
+                from_value="待機", to_value="供給",
+            ),
+            OperationInstance(
+                uid=5, action_uid=6, duration_ms=150,
+                operation_mode="ON-OFF", time_mode="直値指定",
+                start_trigger="終了", start_operation_uid=4,
+                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
+                from_value="OFF", to_value="ON",
+            ),
+            OperationInstance(
+                uid=6, action_uid=7, duration_ms=800,
+                operation_mode="ポイント移動", time_mode="直値指定",
+                start_trigger="終了", start_operation_uid=5,
+                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
+                from_value="後退", to_value="前進",
+            ),
+            OperationInstance(
+                uid=7, action_uid=8, duration_ms=250,
+                operation_mode="ON-OFF", time_mode="直値指定",
+                start_trigger="終了", start_operation_uid=6,
+                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
+                from_value="OFF", to_value="ON",
+            ),
+            OperationInstance(
+                uid=8, action_uid=3, duration_ms=300,
+                operation_mode="ON-OFF", time_mode="直値指定",
+                start_trigger="終了", start_operation_uid=7,
+                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
+                from_value="ON", to_value="OFF",
+            ),
         ]
 
 
