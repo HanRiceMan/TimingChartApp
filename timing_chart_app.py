@@ -33,6 +33,8 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QToolBar,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -782,6 +784,7 @@ class TimingChartView(QGraphicsView):
 # =========================
 
 
+
 class DeviceTab(QWidget):
     model_about_to_change = Signal(str)
     model_changed = Signal()
@@ -792,23 +795,22 @@ class DeviceTab(QWidget):
 
         layout = QVBoxLayout(self)
 
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels([
-            "項目", "動作種別", "動作番号 / 動作"
-        ])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        layout.addWidget(self.table)
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(3)
+        self.tree.setHeaderLabels(["項目", "動作種別", "動作番号 / 動作"])
+        self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.tree.header().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.tree.setAlternatingRowColors(True)
+        layout.addWidget(self.tree)
 
-        note = QLabel("※ 項目列は「ID 名称」の形式で表示し、名称のインデントで大項目 / 中項目 / 小項目を表します。")
+        note = QLabel("※ 大項目 → 中項目 → 小項目 → 動作 の階層で表示します。クリックで展開 / 折りたたみできます。")
         layout.addWidget(note)
 
         btn_row = QHBoxLayout()
-        self.add_btn = QPushButton("追加")
-        self.edit_btn = QPushButton("編集")
-        self.del_btn = QPushButton("削除")
+        self.add_btn = QPushButton("動作追加")
+        self.edit_btn = QPushButton("動作編集")
+        self.del_btn = QPushButton("動作削除")
         btn_row.addWidget(self.add_btn)
         btn_row.addWidget(self.edit_btn)
         btn_row.addWidget(self.del_btn)
@@ -822,45 +824,59 @@ class DeviceTab(QWidget):
         self.refresh()
 
     def refresh(self):
-        rows = []
-        for a in self.model.action_definitions:
-            small = self.model.get_hierarchy(a.small_item_uid)
-            middle = self.model.get_middle_for_small(a.small_item_uid)
-            large = self.model.get_large_for_small(a.small_item_uid)
-            rows.append((large, middle, small, a))
+        self.tree.clear()
 
-        rows.sort(key=lambda x: (
-            x[0].id_number if x[0] else 0,
-            x[1].id_number if x[1] else 0,
-            x[2].id_number if x[2] else 0,
-            x[3].action_no,
-            x[3].uid
-        ))
+        large_items = sorted(
+            self.model.children_of(None, "large"),
+            key=lambda x: (x.id_number, x.uid)
+        )
 
-        self.table.setRowCount(len(rows))
-        for r, (large, middle, small, action) in enumerate(rows):
-            large_text = f"{large.id_number} {large.name}" if large else ""
-            middle_text = f"    {middle.id_number} {middle.name}" if middle else ""
-            small_text = f"        {small.id_number} {small.name}" if small else ""
-            item_text = "\n".join([x for x in [large_text, middle_text, small_text] if x])
+        for large in large_items:
+            large_item = QTreeWidgetItem([f"{large.id_number} {large.name}", "", ""])
+            large_item.setData(0, Qt.UserRole, ("hierarchy", large.uid))
+            self.tree.addTopLevelItem(large_item)
 
-            vals = [
-                item_text,
-                action.action_type,
-                f"{action.action_no} / {action.name}",
-            ]
-            for c, v in enumerate(vals):
-                item = QTableWidgetItem(v)
-                item.setData(Qt.UserRole, action.uid)
-                self.table.setItem(r, c, item)
-            self.table.setRowHeight(r, 62)
+            middle_items = sorted(
+                self.model.children_of(large.uid, "middle"),
+                key=lambda x: (x.id_number, x.uid)
+            )
+            for middle in middle_items:
+                middle_item = QTreeWidgetItem([f"{middle.id_number} {middle.name}", "", ""])
+                middle_item.setData(0, Qt.UserRole, ("hierarchy", middle.uid))
+                large_item.addChild(middle_item)
+
+                small_items = sorted(
+                    self.model.children_of(middle.uid, "small"),
+                    key=lambda x: (x.id_number, x.uid)
+                )
+                for small in small_items:
+                    small_item = QTreeWidgetItem([f"{small.id_number} {small.name}", "", ""])
+                    small_item.setData(0, Qt.UserRole, ("hierarchy", small.uid))
+                    middle_item.addChild(small_item)
+
+                    actions = sorted(
+                        [a for a in self.model.action_definitions if a.small_item_uid == small.uid],
+                        key=lambda x: (x.action_no, x.uid)
+                    )
+                    for action in actions:
+                        action_item = QTreeWidgetItem([
+                            f"{action.action_no} {action.name}",
+                            action.action_type,
+                            f"{action.action_no} / {action.name}",
+                        ])
+                        action_item.setData(0, Qt.UserRole, ("action", action.uid))
+                        small_item.addChild(action_item)
+
+        self.tree.expandToDepth(2)
 
     def _selected_action_uid(self) -> Optional[int]:
-        row = self.table.currentRow()
-        if row < 0:
+        item = self.tree.currentItem()
+        if not item:
             return None
-        item = self.table.item(row, 0)
-        return item.data(Qt.UserRole) if item else None
+        data = item.data(0, Qt.UserRole)
+        if not data or data[0] != "action":
+            return None
+        return data[1]
 
     def add_row(self):
         dlg = DeviceActionRowDialog(self.model, parent=self)
@@ -894,6 +910,7 @@ class DeviceTab(QWidget):
     def edit_row(self):
         action_uid = self._selected_action_uid()
         if action_uid is None:
+            QMessageBox.information(self, "選択", "編集する動作を選択してください。")
             return
         action = self.model.get_action_def(action_uid)
         if not action:
@@ -922,12 +939,14 @@ class DeviceTab(QWidget):
             action.action_type = value["action_type"]
             action.points = value["points"]
 
+            self._cleanup_orphans()
             self.refresh()
             self.model_changed.emit()
 
     def delete_row(self):
         action_uid = self._selected_action_uid()
         if action_uid is None:
+            QMessageBox.information(self, "選択", "削除する動作を選択してください。")
             return
         self.model_about_to_change.emit("機器一覧削除")
         self.model.operations = [op for op in self.model.operations if op.action_uid != action_uid]
