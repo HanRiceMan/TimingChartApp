@@ -1,12 +1,12 @@
 
-import copy
 import json
+import math
 import sys
 from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence, QPainter, QPen, QPolygonF
+from PySide6.QtGui import QAction, QBrush, QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -19,15 +19,20 @@ from PySide6.QtWidgets import (
     QGraphicsPolygonItem,
     QGraphicsRectItem,
     QGraphicsScene,
+    QGraphicsSimpleTextItem,
     QGraphicsView,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QRadioButton,
+    QSplitter,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -130,9 +135,6 @@ class AppModel:
         self.hierarchy_items = [HierarchyItem(**x) for x in data.get("hierarchy_items", [])]
         self.action_definitions = [ActionDefinition(**x) for x in data.get("action_definitions", [])]
         self.operations = [OperationInstance(**x) for x in data.get("operations", [])]
-
-    def clone_data(self) -> Dict:
-        return copy.deepcopy(self.to_dict())
 
 
 # =========================
@@ -275,8 +277,6 @@ class OperationDialog(QDialog):
         self.dep_combo = QComboBox()
         self.dep_combo.addItem("-", "")
         for op in self.model.operations:
-            if operation and op.id == operation.id:
-                continue
             self.dep_combo.addItem(f"{op.id}: {op.name}", str(op.id))
 
         self.from_combo = QComboBox()
@@ -360,6 +360,7 @@ def calculate_schedule(model: AppModel) -> Tuple[Dict[int, Tuple[int, int]], Lis
     ops = {op.id: op for op in model.operations}
     errors = []
 
+    # cycle detection
     visiting = set()
     visited = set()
 
@@ -433,6 +434,7 @@ class TimingChartView(QGraphicsView):
         self.setScene(QGraphicsScene(self))
         self.link_mode = False
         self._pending_source_op_id: Optional[int] = None
+        self.selection_label = None
 
     def set_link_mode(self, enabled: bool):
         self.link_mode = enabled
@@ -455,16 +457,10 @@ class TimingChartView(QGraphicsView):
         schedule, errors = calculate_schedule(model)
         if errors:
             y = 20
-            title = scene.addSimpleText("ERROR")
-            title.setPos(20, y)
-            y += 30
             for e in errors:
-                txt = scene.addSimpleText(f"- {e}")
+                txt = scene.addSimpleText(f"ERROR: {e}")
                 txt.setPos(20, y)
-                y += 22
-
-            hint = scene.addSimpleText("Ctrl+Z で元に戻す / Ctrl+Y でやり直し")
-            hint.setPos(20, y + 10)
+                y += 20
             return
 
         row_h = 80
@@ -476,12 +472,15 @@ class TimingChartView(QGraphicsView):
         total_h = header_h + max(1, len(model.small_items())) * row_h + 80
         scene.setSceneRect(0, 0, total_w, total_h)
 
+        # small item row allocation
         smalls = sorted(model.small_items(), key=lambda x: x.id)
         row_map = {s.id: i for i, s in enumerate(smalls)}
 
+        # header background
         scene.addRect(0, 0, total_w, header_h)
         scene.addLine(left_w, 0, left_w, total_h)
 
+        # time grid
         step = 500
         t = 0
         while t <= max_time + 1000:
@@ -493,6 +492,7 @@ class TimingChartView(QGraphicsView):
             txt.setPos(x + 4, 8)
             t += step
 
+        # row backgrounds / labels
         for s in smalls:
             row = row_map[s.id]
             top = header_h + row * row_h
@@ -509,16 +509,16 @@ class TimingChartView(QGraphicsView):
             action_def = model.get_action_def(op.action_def_id)
             if not action_def:
                 continue
-
             small_id = action_def.small_item_id
             row = row_map.get(small_id)
             if row is None:
                 continue
-
             start, end = schedule.get(op.id, (0, 0))
             top = header_h + row * row_h
             x1 = left_w + start * time_scale
             x2 = left_w + end * time_scale
+
+            mid_y = top + row_h / 2
 
             if action_def.action_type == "onoff":
                 y_off = top + row_h * 0.68
@@ -542,6 +542,7 @@ class TimingChartView(QGraphicsView):
                 scene.addLine(x1, y1, x2, y2, pen)
                 hit_rect = QRectF(min(x1, x2) - 6, min(y1, y2) - 10, max(20, abs(x2 - x1) + 12), abs(y2 - y1) + 20)
 
+                # point labels
                 for p, i in index_map.items():
                     py = top + 14 + (row_h - 28) * (i / max(1, n))
                     scene.addLine(left_w - 6, py, left_w, py, QPen(QColor(140, 140, 140)))
@@ -562,6 +563,7 @@ class TimingChartView(QGraphicsView):
                 "end": QPointF(x2, y2),
             }
 
+        # dependency arrows
         for op in model.operations:
             if op.trigger_operation_id is None:
                 continue
@@ -594,7 +596,6 @@ class TimingChartView(QGraphicsView):
 # =========================
 
 class DeviceTab(QWidget):
-    model_about_to_change = Signal(str)
     model_changed = Signal()
 
     def __init__(self, model: AppModel, parent=None):
@@ -699,7 +700,6 @@ class DeviceTab(QWidget):
             if level != "large" and parent_id is None:
                 QMessageBox.warning(self, "入力不足", f"{level} は親項目が必要です。")
                 return
-            self.model_about_to_change.emit("階層追加")
             self.model.hierarchy_items.append(HierarchyItem(
                 id=self.model.next_hierarchy_id(),
                 name=name,
@@ -722,7 +722,6 @@ class DeviceTab(QWidget):
             if not name:
                 QMessageBox.warning(self, "入力不足", "名称を入力してください。")
                 return
-            self.model_about_to_change.emit("階層編集")
             item.name = name
             item.level = level
             item.parent_id = parent_id
@@ -741,7 +740,7 @@ class DeviceTab(QWidget):
             descendants.add(cur)
             stack.extend([x.id for x in self.model.children_of(cur)])
 
-        self.model_about_to_change.emit("階層削除")
+        # remove dependent action defs and operations
         related_action_ids = [a.id for a in self.model.action_definitions if a.small_item_id in descendants]
         self.model.operations = [op for op in self.model.operations if op.action_def_id not in related_action_ids]
         self.model.action_definitions = [a for a in self.model.action_definitions if a.small_item_id not in descendants]
@@ -760,7 +759,6 @@ class DeviceTab(QWidget):
             if not name:
                 QMessageBox.warning(self, "入力不足", "動作名称を入力してください。")
                 return
-            self.model_about_to_change.emit("動作定義追加")
             self.model.action_definitions.append(ActionDefinition(
                 id=self.model.next_action_def_id(),
                 small_item_id=small_item_id,
@@ -781,7 +779,6 @@ class DeviceTab(QWidget):
         dlg = ActionDefinitionDialog(self.model, action_def=action_def, parent=self)
         if dlg.exec():
             small_item_id, name, action_type, points = dlg.get_value()
-            self.model_about_to_change.emit("動作定義編集")
             action_def.small_item_id = small_item_id
             action_def.name = name
             action_def.action_type = action_type
@@ -793,7 +790,6 @@ class DeviceTab(QWidget):
         action_id = self._selected_action_def_id()
         if action_id is None:
             return
-        self.model_about_to_change.emit("動作定義削除")
         self.model.operations = [op for op in self.model.operations if op.action_def_id != action_id]
         self.model.action_definitions = [a for a in self.model.action_definitions if a.id != action_id]
         self.refresh()
@@ -801,7 +797,6 @@ class DeviceTab(QWidget):
 
 
 class OperationsTab(QWidget):
-    model_about_to_change = Signal(str)
     model_changed = Signal()
 
     def __init__(self, model: AppModel, parent=None):
@@ -888,7 +883,6 @@ class OperationsTab(QWidget):
             if not name:
                 QMessageBox.warning(self, "入力不足", "設定名を入力してください。")
                 return
-            self.model_about_to_change.emit("動作追加")
             self.model.operations.append(OperationInstance(
                 id=self.model.next_operation_id(),
                 action_def_id=action_def_id,
@@ -916,7 +910,6 @@ class OperationsTab(QWidget):
             except ValueError:
                 QMessageBox.warning(self, "入力エラー", "時間(ms)は数値で入力してください。")
                 return
-            self.model_about_to_change.emit("動作編集")
             op.action_def_id = action_def_id
             op.name = name
             op.duration_ms = duration_ms
@@ -931,7 +924,6 @@ class OperationsTab(QWidget):
         op_id = self._selected_operation_id()
         if op_id is None:
             return
-        self.model_about_to_change.emit("動作削除")
         for op in self.model.operations:
             if op.trigger_operation_id == op_id:
                 op.trigger_operation_id = None
@@ -942,7 +934,6 @@ class OperationsTab(QWidget):
 
 
 class ChartTab(QWidget):
-    model_about_to_change = Signal(str)
     model_changed = Signal()
 
     def __init__(self, model: AppModel, parent=None):
@@ -979,7 +970,6 @@ class ChartTab(QWidget):
         target = self.model.get_operation(target_id)
         if not target:
             return
-
         answer = QMessageBox.question(
             self,
             "依存設定",
@@ -990,8 +980,6 @@ class ChartTab(QWidget):
         )
         if answer == QMessageBox.Cancel:
             return
-
-        self.model_about_to_change.emit("依存関係設定")
         target.trigger_operation_id = source_id
         target.start_trigger = "after_finish" if answer == QMessageBox.Yes else "after_start"
         self.refresh()
@@ -1012,10 +1000,6 @@ class MainWindow(QMainWindow):
         self.resize(1500, 900)
 
         self.model = AppModel()
-        self._undo_stack: List[Tuple[str, Dict]] = []
-        self._redo_stack: List[Tuple[str, Dict]] = []
-        self._history_limit = 100
-
         self._load_sample_data()
 
         self.tabs = QTabWidget()
@@ -1029,121 +1013,40 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.device_tab, "機器一覧")
         self.tabs.addTab(self.ops_tab, "動作設定")
 
-        self._wire_model_signals()
+        self.device_tab.model_changed.connect(self.refresh_all)
+        self.ops_tab.model_changed.connect(self.refresh_all)
+        self.chart_tab.model_changed.connect(self.refresh_all)
 
         self._build_toolbar()
         self.refresh_all()
-        self._reset_history("初期状態")
-
-    def _wire_model_signals(self):
-        for tab in (self.device_tab, self.ops_tab, self.chart_tab):
-            tab.model_about_to_change.connect(self.push_undo_snapshot)
-            tab.model_changed.connect(self.refresh_all)
-
-    def _apply_model_to_tabs(self):
-        self.device_tab.model = self.model
-        self.ops_tab.model = self.model
-        self.chart_tab.model = self.model
 
     def _build_toolbar(self):
         tb = QToolBar("Main")
         self.addToolBar(tb)
 
-        new_action = QAction("新規", self)
         save_action = QAction("保存", self)
         load_action = QAction("読込", self)
-        undo_action = QAction("戻る", self)
-        redo_action = QAction("進む", self)
+        new_action = QAction("新規", self)
 
-        undo_action.setShortcut(QKeySequence.Undo)
-        redo_action.setShortcut(QKeySequence.Redo)
-
-        new_action.triggered.connect(self.new_project)
         save_action.triggered.connect(self.save_project)
         load_action.triggered.connect(self.load_project)
-        undo_action.triggered.connect(self.undo)
-        redo_action.triggered.connect(self.redo)
-
-        self.new_action = new_action
-        self.save_action = save_action
-        self.load_action = load_action
-        self.undo_action = undo_action
-        self.redo_action = redo_action
+        new_action.triggered.connect(self.new_project)
 
         tb.addAction(new_action)
         tb.addAction(save_action)
         tb.addAction(load_action)
-        tb.addSeparator()
-        tb.addAction(undo_action)
-        tb.addAction(redo_action)
-
-        self.addAction(undo_action)
-        self.addAction(redo_action)
-
-        self._update_history_actions()
-
-    def push_undo_snapshot(self, label: str):
-        self._undo_stack.append((label, self.model.clone_data()))
-        if len(self._undo_stack) > self._history_limit:
-            self._undo_stack.pop(0)
-        self._redo_stack.clear()
-        self._update_history_actions()
-
-    def _restore_snapshot(self, snapshot: Dict):
-        self.model.from_dict(copy.deepcopy(snapshot))
-        self._apply_model_to_tabs()
-        self.refresh_all()
-
-    def _reset_history(self, label: str = "初期状態"):
-        self._undo_stack = [(label, self.model.clone_data())]
-        self._redo_stack = []
-        self._update_history_actions()
-
-    def _update_history_actions(self):
-        can_undo = len(self._undo_stack) > 1
-        can_redo = len(self._redo_stack) > 0
-        self.undo_action.setEnabled(can_undo)
-        self.redo_action.setEnabled(can_redo)
-
-        if can_undo:
-            self.undo_action.setText(f"戻る ({self._undo_stack[-1][0]})")
-        else:
-            self.undo_action.setText("戻る")
-
-        if can_redo:
-            self.redo_action.setText(f"進む ({self._redo_stack[-1][0]})")
-        else:
-            self.redo_action.setText("進む")
-
-    def undo(self):
-        if len(self._undo_stack) <= 1:
-            return
-        current = self._undo_stack.pop()
-        self._redo_stack.append(current)
-        _, snapshot = self._undo_stack[-1]
-        self._restore_snapshot(snapshot)
-        self._update_history_actions()
-
-    def redo(self):
-        if not self._redo_stack:
-            return
-        label, snapshot = self._redo_stack.pop()
-        self._undo_stack.append((label, copy.deepcopy(snapshot)))
-        self._restore_snapshot(snapshot)
-        self._update_history_actions()
 
     def refresh_all(self):
-        self._apply_model_to_tabs()
         self.device_tab.refresh()
         self.ops_tab.refresh()
         self.chart_tab.refresh()
-        self._update_history_actions()
 
     def new_project(self):
         self.model = AppModel()
-        self._apply_model_to_tabs()
+        self.device_tab.model = self.model
+        self.ops_tab.model = self.model
+        self.chart_tab.model = self.model
         self.refresh_all()
-        self._reset_history("新規プロジェクト")
 
     def save_project(self):
         path, _ = QFileDialog.getSaveFileName(self, "保存", "", "JSON (*.json)")
@@ -1160,12 +1063,11 @@ class MainWindow(QMainWindow):
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         self.model.from_dict(data)
-        self._apply_model_to_tabs()
         self.refresh_all()
-        self._reset_history("読込後")
         QMessageBox.information(self, "読込", "読み込みました。")
 
     def _load_sample_data(self):
+        # Sample hierarchy
         self.model.hierarchy_items = [
             HierarchyItem(1, "設備A", "large", None),
             HierarchyItem(2, "搬送ユニット", "middle", 1),
