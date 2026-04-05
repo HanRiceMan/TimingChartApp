@@ -4,6 +4,7 @@ import json
 import sys
 from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional, Tuple
+from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem, QInputDialog
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence, QPainter, QPen, QPolygonF
