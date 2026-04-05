@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QInputDialog,
     QLineEdit,
     QMainWindow,
     QMessageBox,
@@ -33,8 +34,6 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QToolBar,
-    QTreeWidget,
-    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -51,6 +50,7 @@ class HierarchyItem:
     name: str
     level: str   # large / middle / small
     parent_uid: Optional[int] = None
+    action_type: str = ""
 
 
 @dataclass
@@ -59,7 +59,6 @@ class ActionDefinition:
     small_item_uid: int
     action_no: int
     name: str
-    action_type: str  # onoff / points
     points: List[str] = field(default_factory=list)
 
 
@@ -153,7 +152,8 @@ class AppModel:
         large_part = f"{large.id_number}:{large.name}" if large else "-"
         middle_part = f"{middle.id_number}:{middle.name}" if middle else "-"
         small_part = f"{small.id_number}:{small.name}" if small else "-"
-        return f"{large_part} / {middle_part} / {small_part} / 動作{a.action_no}:{a.name}"
+        small_type = small.action_type if small else ""
+        return f"{large_part} / {middle_part} / {small_part} / {small_type} / 動作{a.action_no}:{a.name}"
 
     # ---------- persistence ----------
     def to_dict(self) -> Dict:
@@ -225,12 +225,14 @@ class AppModel:
             uid = self.next_action_uid()
             action_id_map[old["id"]] = uid
             small_uid = hierarchy_id_map.get(old["small_item_id"])
+            small_item = self.get_hierarchy(small_uid)
+            if small_item and not small_item.action_type:
+                small_item.action_type = old.get("action_type", "onoff")
             self.action_definitions.append(ActionDefinition(
                 uid=uid,
                 small_item_uid=small_uid,
                 action_no=self.next_action_no(small_uid),
                 name=old["name"],
-                action_type=old["action_type"],
                 points=old.get("points", []),
             ))
 
@@ -262,51 +264,110 @@ class AppModel:
 # Dialogs
 # =========================
 
-class DeviceActionRowDialog(QDialog):
-    def __init__(self, model: AppModel, action_def: Optional[ActionDefinition] = None, parent=None):
+
+class HierarchyItemDialog(QDialog):
+    def __init__(self, model: AppModel, item: Optional[HierarchyItem] = None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("機器一覧項目")
+        self.setWindowTitle("機器項目")
+        self.model = model
+        self.item = item
+
+        self.level_combo = QComboBox()
+        self.level_combo.addItems(["large", "middle", "small"])
+        self.parent_combo = QComboBox()
+        self.id_edit = QLineEdit()
+        self.name_edit = QLineEdit()
+        self.action_type_combo = QComboBox()
+        self.action_type_combo.addItems(["", "onoff", "points"])
+
+        form = QFormLayout(self)
+        form.addRow("レベル", self.level_combo)
+        form.addRow("親項目", self.parent_combo)
+        form.addRow("ID", self.id_edit)
+        form.addRow("名称", self.name_edit)
+        form.addRow("動作種別(小項目のみ)", self.action_type_combo)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+        self.level_combo.currentTextChanged.connect(self._reload_parents)
+        self.level_combo.currentTextChanged.connect(self._on_level_changed)
+
+        self._reload_parents()
+        self._on_level_changed()
+
+        if item:
+            self.level_combo.setCurrentText(item.level)
+            self._reload_parents()
+            parent_val = "" if item.parent_uid is None else str(item.parent_uid)
+            idx = self.parent_combo.findData(parent_val)
+            if idx >= 0:
+                self.parent_combo.setCurrentIndex(idx)
+            self.id_edit.setText(str(item.id_number))
+            self.name_edit.setText(item.name)
+            self.action_type_combo.setCurrentText(item.action_type or "")
+            self._on_level_changed()
+        else:
+            self.id_edit.setText("1")
+
+    def _reload_parents(self):
+        level = self.level_combo.currentText()
+        self.parent_combo.clear()
+        self.parent_combo.addItem("-", "")
+        if level == "large":
+            return
+        parent_level = "large" if level == "middle" else "middle"
+        for x in sorted([h for h in self.model.hierarchy_items if h.level == parent_level], key=lambda x: (x.id_number, x.uid)):
+            self.parent_combo.addItem(f"{x.id_number} {x.name}", str(x.uid))
+
+    def _on_level_changed(self):
+        is_small = self.level_combo.currentText() == "small"
+        self.action_type_combo.setEnabled(is_small)
+        if not is_small:
+            self.action_type_combo.setCurrentText("")
+
+    def get_value(self):
+        raw_parent = self.parent_combo.currentData()
+        parent_uid = int(raw_parent) if raw_parent not in ("", None) else None
+        return {
+            "level": self.level_combo.currentText(),
+            "parent_uid": parent_uid,
+            "id_number": int(self.id_edit.text().strip()),
+            "name": self.name_edit.text().strip(),
+            "action_type": self.action_type_combo.currentText().strip(),
+        }
+
+
+class ActionDefinitionDialog(QDialog):
+    def __init__(self, model: AppModel, action_def: Optional[ActionDefinition] = None, fixed_small_uid: Optional[int] = None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("動作")
         self.model = model
         self.action_def = action_def
 
-        self.large_combo = QComboBox()
-        self.middle_combo = QComboBox()
         self.small_combo = QComboBox()
+        small_items = sorted(
+            [x for x in self.model.small_items()],
+            key=lambda x: (
+                (self.model.get_large_for_small(x.uid).id_number if self.model.get_large_for_small(x.uid) else 0),
+                (self.model.get_middle_for_small(x.uid).id_number if self.model.get_middle_for_small(x.uid) else 0),
+                x.id_number, x.uid
+            )
+        )
+        for s in small_items:
+            self.small_combo.addItem(self.model.hierarchy_path(s.uid), s.uid)
 
-        self.large_id_edit = QLineEdit()
-        self.large_name_edit = QLineEdit()
-        self.middle_id_edit = QLineEdit()
-        self.middle_name_edit = QLineEdit()
-        self.small_id_edit = QLineEdit()
-        self.small_name_edit = QLineEdit()
-
-        self.action_type_combo = QComboBox()
-        self.action_type_combo.addItems(["onoff", "points"])
         self.action_no_edit = QLineEdit()
-        self.action_name_edit = QLineEdit()
+        self.name_edit = QLineEdit()
         self.points_edit = QLineEdit()
         self.points_hint = QLabel("points の場合のみ。例: 原点, 待機, 加工")
 
-        for large in sorted(self.model.children_of(None, "large"), key=lambda x: (x.id_number, x.uid)):
-            self.large_combo.addItem(f"{large.id_number}: {large.name}", large.uid)
-        self.large_combo.addItem("(新規作成)", "new")
-
-        self._reload_middle_combo()
-        self._reload_small_combo()
-
         form = QFormLayout(self)
-        form.addRow("既存大項目", self.large_combo)
-        form.addRow("大項目ID", self.large_id_edit)
-        form.addRow("大項目", self.large_name_edit)
-        form.addRow("既存中項目", self.middle_combo)
-        form.addRow("中項目ID", self.middle_id_edit)
-        form.addRow("中項目", self.middle_name_edit)
-        form.addRow("既存小項目", self.small_combo)
-        form.addRow("小項目ID", self.small_id_edit)
-        form.addRow("小項目", self.small_name_edit)
-        form.addRow("動作種別", self.action_type_combo)
+        form.addRow("対象小項目", self.small_combo)
         form.addRow("動作番号", self.action_no_edit)
-        form.addRow("動作", self.action_name_edit)
+        form.addRow("動作", self.name_edit)
         form.addRow("ポイント一覧", self.points_edit)
         form.addRow("", self.points_hint)
 
@@ -315,129 +376,44 @@ class DeviceActionRowDialog(QDialog):
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
 
-        self.large_combo.currentIndexChanged.connect(self._on_large_changed)
-        self.middle_combo.currentIndexChanged.connect(self._on_middle_changed)
-        self.small_combo.currentIndexChanged.connect(self._on_small_changed)
-        self.action_type_combo.currentTextChanged.connect(self._refresh_points_enabled)
-        self._refresh_points_enabled()
+        self.small_combo.currentIndexChanged.connect(self._reload_points_hint)
 
-        if action_def:
-            self._load_existing_action(action_def)
-        else:
-            self._prefill_new_ids()
-
-    def _refresh_points_enabled(self):
-        enabled = self.action_type_combo.currentText() == "points"
-        self.points_edit.setEnabled(enabled)
-        self.points_hint.setEnabled(enabled)
-
-    def _reload_middle_combo(self):
-        self.middle_combo.clear()
-        large_uid = self.large_combo.currentData()
-        if isinstance(large_uid, int):
-            for middle in sorted(self.model.children_of(large_uid, "middle"), key=lambda x: (x.id_number, x.uid)):
-                self.middle_combo.addItem(f"{middle.id_number}: {middle.name}", middle.uid)
-        self.middle_combo.addItem("(新規作成)", "new")
-
-    def _reload_small_combo(self):
-        self.small_combo.clear()
-        middle_uid = self.middle_combo.currentData()
-        if isinstance(middle_uid, int):
-            for small in sorted(self.model.children_of(middle_uid, "small"), key=lambda x: (x.id_number, x.uid)):
-                self.small_combo.addItem(f"{small.id_number}: {small.name}", small.uid)
-        self.small_combo.addItem("(新規作成)", "new")
-
-    def _on_large_changed(self):
-        self._reload_middle_combo()
-        self._reload_small_combo()
-        self._prefill_new_ids()
-
-    def _on_middle_changed(self):
-        self._reload_small_combo()
-        self._prefill_new_ids()
-
-    def _on_small_changed(self):
-        self._prefill_new_ids()
-
-    def _prefill_new_ids(self):
-        large_val = self.large_combo.currentData()
-        if large_val == "new" or self.large_combo.count() == 1:
-            self.large_id_edit.setText(str(self.model.next_local_id("large", None)))
-        elif isinstance(large_val, int):
-            large = self.model.get_hierarchy(large_val)
-            if large:
-                self.large_id_edit.setText(str(large.id_number))
-                self.large_name_edit.setText(large.name)
-
-        middle_val = self.middle_combo.currentData()
-        parent_large_uid = self.large_combo.currentData() if isinstance(self.large_combo.currentData(), int) else None
-        if middle_val == "new":
-            self.middle_id_edit.setText(str(self.model.next_local_id("middle", parent_large_uid)))
-        elif isinstance(middle_val, int):
-            middle = self.model.get_hierarchy(middle_val)
-            if middle:
-                self.middle_id_edit.setText(str(middle.id_number))
-                self.middle_name_edit.setText(middle.name)
-
-        small_val = self.small_combo.currentData()
-        parent_middle_uid = self.middle_combo.currentData() if isinstance(self.middle_combo.currentData(), int) else None
-        if small_val == "new":
-            self.small_id_edit.setText(str(self.model.next_local_id("small", parent_middle_uid)))
-        elif isinstance(small_val, int):
-            small = self.model.get_hierarchy(small_val)
-            if small:
-                self.small_id_edit.setText(str(small.id_number))
-                self.small_name_edit.setText(small.name)
-                self.action_no_edit.setText(str(self.model.next_action_no(small.uid)))
-
-    def _load_existing_action(self, action_def: ActionDefinition):
-        small = self.model.get_hierarchy(action_def.small_item_uid)
-        middle = self.model.get_middle_for_small(action_def.small_item_uid)
-        large = self.model.get_large_for_small(action_def.small_item_uid)
-
-        if large:
-            idx = self.large_combo.findData(large.uid)
-            if idx >= 0:
-                self.large_combo.setCurrentIndex(idx)
-        self._reload_middle_combo()
-        if middle:
-            idx = self.middle_combo.findData(middle.uid)
-            if idx >= 0:
-                self.middle_combo.setCurrentIndex(idx)
-        self._reload_small_combo()
-        if small:
-            idx = self.small_combo.findData(small.uid)
+        if fixed_small_uid is not None:
+            idx = self.small_combo.findData(fixed_small_uid)
             if idx >= 0:
                 self.small_combo.setCurrentIndex(idx)
 
-        self.large_id_edit.setText(str(large.id_number if large else 1))
-        self.large_name_edit.setText(large.name if large else "")
-        self.middle_id_edit.setText(str(middle.id_number if middle else 1))
-        self.middle_name_edit.setText(middle.name if middle else "")
-        self.small_id_edit.setText(str(small.id_number if small else 1))
-        self.small_name_edit.setText(small.name if small else "")
-        self.action_type_combo.setCurrentText(action_def.action_type)
-        self.action_no_edit.setText(str(action_def.action_no))
-        self.action_name_edit.setText(action_def.name)
-        self.points_edit.setText(", ".join(action_def.points))
-        self._refresh_points_enabled()
+        if action_def:
+            idx = self.small_combo.findData(action_def.small_item_uid)
+            if idx >= 0:
+                self.small_combo.setCurrentIndex(idx)
+            self.action_no_edit.setText(str(action_def.action_no))
+            self.name_edit.setText(action_def.name)
+            self.points_edit.setText(", ".join(action_def.points))
+        else:
+            small_uid = self.small_combo.currentData()
+            self.action_no_edit.setText(str(self.model.next_action_no(int(small_uid)) if small_uid is not None else 1))
 
-    def get_value(self) -> Dict:
-        action_type = self.action_type_combo.currentText()
-        points = [x.strip() for x in self.points_edit.text().split(",") if x.strip()] if action_type == "points" else ["OFF", "ON"]
+        self._reload_points_hint()
+
+    def _reload_points_hint(self):
+        small_uid = self.small_combo.currentData()
+        small = self.model.get_hierarchy(int(small_uid)) if small_uid is not None else None
+        is_points = bool(small and small.action_type == "points")
+        self.points_edit.setEnabled(is_points)
+        self.points_hint.setEnabled(is_points)
+        if not is_points:
+            self.points_edit.setText("")
+
+    def get_value(self):
+        small_uid = int(self.small_combo.currentData())
+        small = self.model.get_hierarchy(small_uid)
+        is_points = bool(small and small.action_type == "points")
+        points = [x.strip() for x in self.points_edit.text().split(",") if x.strip()] if is_points else ["OFF", "ON"]
         return {
-            "large_existing": self.large_combo.currentData(),
-            "large_id": int(self.large_id_edit.text().strip()),
-            "large_name": self.large_name_edit.text().strip(),
-            "middle_existing": self.middle_combo.currentData(),
-            "middle_id": int(self.middle_id_edit.text().strip()),
-            "middle_name": self.middle_name_edit.text().strip(),
-            "small_existing": self.small_combo.currentData(),
-            "small_id": int(self.small_id_edit.text().strip()),
-            "small_name": self.small_name_edit.text().strip(),
-            "action_type": action_type,
+            "small_item_uid": small_uid,
             "action_no": int(self.action_no_edit.text().strip()),
-            "action_name": self.action_name_edit.text().strip(),
+            "name": self.name_edit.text().strip(),
             "points": points,
         }
 
@@ -517,7 +493,8 @@ class OperationDialog(QDialog):
         action_def = self.model.get_action_def(int(self.action_combo.currentData()))
         values = []
         if action_def:
-            values = ["OFF", "ON"] if action_def.action_type == "onoff" else (action_def.points or ["P1", "P2"])
+            small = self.model.get_hierarchy(action_def.small_item_uid)
+            values = ["OFF", "ON"] if (small and small.action_type == "onoff") else (action_def.points or ["P1", "P2"])
         self.from_combo.addItems(values)
         self.to_combo.addItems(values)
         if len(values) >= 2:
@@ -713,7 +690,8 @@ class TimingChartView(QGraphicsView):
             x1 = left_w + start * time_scale
             x2 = left_w + end * time_scale
 
-            if action_def.action_type == "onoff":
+            small_item = model.get_hierarchy(action_def.small_item_uid)
+            if small_item and small_item.action_type == "onoff":
                 y_off = top + row_h * 0.68
                 y_on = top + row_h * 0.28
                 y1 = y_on if op.from_value == "ON" else y_off
@@ -797,200 +775,252 @@ class DeviceTab(QWidget):
 
         self.tree = QTreeWidget()
         self.tree.setColumnCount(3)
-        self.tree.setHeaderLabels(["項目", "動作種別", "動作番号 / 動作"])
-        self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.tree.header().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.tree.setHeaderLabels(["項目", "動作種別", "動作"])
+        self.tree.header().setSectionResizeMode(0, QHeaderView.Interactive)
+        self.tree.header().setSectionResizeMode(1, QHeaderView.Interactive)
+        self.tree.header().setSectionResizeMode(2, QHeaderView.Interactive)
+        self.tree.setColumnWidth(0, 420)
+        self.tree.setColumnWidth(1, 120)
+        self.tree.setColumnWidth(2, 360)
         self.tree.setAlternatingRowColors(True)
         layout.addWidget(self.tree)
 
-        note = QLabel("※ 大項目 → 中項目 → 小項目 → 動作 の階層で表示します。クリックで展開 / 折りたたみできます。")
+        note = QLabel("※ 大項目 → 中項目 → 小項目の階層で表示します。動作は小項目に紐づいて右側に表示します。")
         layout.addWidget(note)
 
         btn_row = QHBoxLayout()
-        self.add_btn = QPushButton("動作追加")
-        self.edit_btn = QPushButton("動作編集")
-        self.del_btn = QPushButton("動作削除")
-        btn_row.addWidget(self.add_btn)
-        btn_row.addWidget(self.edit_btn)
-        btn_row.addWidget(self.del_btn)
+        self.add_device_btn = QPushButton("機器追加")
+        self.edit_device_btn = QPushButton("機器編集")
+        self.del_device_btn = QPushButton("機器削除")
+        self.add_action_btn = QPushButton("動作追加")
+        self.edit_action_btn = QPushButton("動作編集")
+        self.del_action_btn = QPushButton("動作削除")
+        btn_row.addWidget(self.add_device_btn)
+        btn_row.addWidget(self.edit_device_btn)
+        btn_row.addWidget(self.del_device_btn)
+        btn_row.addSpacing(16)
+        btn_row.addWidget(self.add_action_btn)
+        btn_row.addWidget(self.edit_action_btn)
+        btn_row.addWidget(self.del_action_btn)
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
-        self.add_btn.clicked.connect(self.add_row)
-        self.edit_btn.clicked.connect(self.edit_row)
-        self.del_btn.clicked.connect(self.delete_row)
+        self.add_device_btn.clicked.connect(self.add_device)
+        self.edit_device_btn.clicked.connect(self.edit_device)
+        self.del_device_btn.clicked.connect(self.delete_device)
+        self.add_action_btn.clicked.connect(self.add_action)
+        self.edit_action_btn.clicked.connect(self.edit_action)
+        self.del_action_btn.clicked.connect(self.delete_action)
 
         self.refresh()
 
     def refresh(self):
         self.tree.clear()
-
-        large_items = sorted(
-            self.model.children_of(None, "large"),
-            key=lambda x: (x.id_number, x.uid)
-        )
-
+        large_items = sorted(self.model.children_of(None, "large"), key=lambda x: (x.id_number, x.uid))
         for large in large_items:
             large_item = QTreeWidgetItem([f"{large.id_number} {large.name}", "", ""])
             large_item.setData(0, Qt.UserRole, ("hierarchy", large.uid))
             self.tree.addTopLevelItem(large_item)
 
-            middle_items = sorted(
-                self.model.children_of(large.uid, "middle"),
-                key=lambda x: (x.id_number, x.uid)
-            )
+            middle_items = sorted(self.model.children_of(large.uid, "middle"), key=lambda x: (x.id_number, x.uid))
             for middle in middle_items:
                 middle_item = QTreeWidgetItem([f"{middle.id_number} {middle.name}", "", ""])
                 middle_item.setData(0, Qt.UserRole, ("hierarchy", middle.uid))
                 large_item.addChild(middle_item)
 
-                small_items = sorted(
-                    self.model.children_of(middle.uid, "small"),
-                    key=lambda x: (x.id_number, x.uid)
-                )
+                small_items = sorted(self.model.children_of(middle.uid, "small"), key=lambda x: (x.id_number, x.uid))
                 for small in small_items:
-                    small_item = QTreeWidgetItem([f"{small.id_number} {small.name}", "", ""])
+                    actions = sorted([a for a in self.model.action_definitions if a.small_item_uid == small.uid], key=lambda x: (x.action_no, x.uid))
+                    action_text = "\n".join([f"{a.action_no} / {a.name}" for a in actions])
+                    small_item = QTreeWidgetItem([f"{small.id_number} {small.name}", small.action_type or "", action_text])
                     small_item.setData(0, Qt.UserRole, ("hierarchy", small.uid))
                     middle_item.addChild(small_item)
 
-                    actions = sorted(
-                        [a for a in self.model.action_definitions if a.small_item_uid == small.uid],
-                        key=lambda x: (x.action_no, x.uid)
-                    )
-                    for action in actions:
-                        action_item = QTreeWidgetItem([
-                            f"{action.action_no} {action.name}",
-                            action.action_type,
-                            f"{action.action_no} / {action.name}",
-                        ])
-                        action_item.setData(0, Qt.UserRole, ("action", action.uid))
-                        small_item.addChild(action_item)
-
         self.tree.expandToDepth(2)
 
-    def _selected_action_uid(self) -> Optional[int]:
+    def _current_item_data(self):
         item = self.tree.currentItem()
-        if not item:
-            return None
-        data = item.data(0, Qt.UserRole)
-        if not data or data[0] != "action":
+        return item.data(0, Qt.UserRole) if item else None
+
+    def _selected_hierarchy_uid(self) -> Optional[int]:
+        data = self._current_item_data()
+        if not data or data[0] != "hierarchy":
             return None
         return data[1]
 
-    def add_row(self):
-        dlg = DeviceActionRowDialog(self.model, parent=self)
+    def _selected_small_uid(self) -> Optional[int]:
+        uid = self._selected_hierarchy_uid()
+        if uid is None:
+            return None
+        item = self.model.get_hierarchy(uid)
+        return uid if item and item.level == "small" else None
+
+    def _choose_action_for_small(self, small_uid: int) -> Optional[int]:
+        actions = sorted([a for a in self.model.action_definitions if a.small_item_uid == small_uid], key=lambda x: (x.action_no, x.uid))
+        if not actions:
+            QMessageBox.information(self, "動作なし", "この小項目には動作がありません。")
+            return None
+        if len(actions) == 1:
+            return actions[0].uid
+        labels = [f"{a.action_no} / {a.name}" for a in actions]
+        selected, ok = QInputDialog.getItem(self, "動作選択", "対象動作を選択してください", labels, 0, False)
+        if not ok:
+            return None
+        return actions[labels.index(selected)].uid
+
+    def add_device(self):
+        dlg = HierarchyItemDialog(self.model, parent=self)
         if dlg.exec():
             try:
                 value = dlg.get_value()
             except ValueError:
-                QMessageBox.warning(self, "入力エラー", "ID・動作番号は数値で入力してください。")
+                QMessageBox.warning(self, "入力エラー", "IDは数値で入力してください。")
+                return
+            if not value["name"]:
+                QMessageBox.warning(self, "入力不足", "名称を入力してください。")
+                return
+            if value["level"] != "large" and value["parent_uid"] is None:
+                QMessageBox.warning(self, "入力不足", "親項目を選択してください。")
+                return
+            if value["level"] == "small" and not value["action_type"]:
+                QMessageBox.warning(self, "入力不足", "小項目には動作種別を設定してください。")
                 return
 
-            if not value["large_name"] or not value["middle_name"] or not value["small_name"] or not value["action_name"]:
-                QMessageBox.warning(self, "入力不足", "大項目 / 中項目 / 小項目 / 動作 を入力してください。")
+            self.model_about_to_change.emit("機器追加")
+            self.model.hierarchy_items.append(HierarchyItem(
+                uid=self.model.next_hierarchy_uid(),
+                id_number=value["id_number"],
+                name=value["name"],
+                level=value["level"],
+                parent_uid=value["parent_uid"],
+                action_type=value["action_type"],
+            ))
+            self.refresh()
+            self.model_changed.emit()
+
+    def edit_device(self):
+        uid = self._selected_hierarchy_uid()
+        if uid is None:
+            QMessageBox.information(self, "選択", "編集する機器項目を選択してください。")
+            return
+        item = self.model.get_hierarchy(uid)
+        if not item:
+            return
+        dlg = HierarchyItemDialog(self.model, item=item, parent=self)
+        if dlg.exec():
+            try:
+                value = dlg.get_value()
+            except ValueError:
+                QMessageBox.warning(self, "入力エラー", "IDは数値で入力してください。")
+                return
+            if not value["name"]:
+                QMessageBox.warning(self, "入力不足", "名称を入力してください。")
+                return
+            if value["level"] != "large" and value["parent_uid"] is None:
+                QMessageBox.warning(self, "入力不足", "親項目を選択してください。")
+                return
+            if value["level"] == "small" and not value["action_type"]:
+                QMessageBox.warning(self, "入力不足", "小項目には動作種別を設定してください。")
                 return
 
-            self.model_about_to_change.emit("機器一覧追加")
-            large_uid = self._resolve_or_create_hierarchy("large", value["large_existing"], None, value["large_id"], value["large_name"])
-            middle_uid = self._resolve_or_create_hierarchy("middle", value["middle_existing"], large_uid, value["middle_id"], value["middle_name"])
-            small_uid = self._resolve_or_create_hierarchy("small", value["small_existing"], middle_uid, value["small_id"], value["small_name"])
+            self.model_about_to_change.emit("機器編集")
+            item.id_number = value["id_number"]
+            item.name = value["name"]
+            item.level = value["level"]
+            item.parent_uid = value["parent_uid"]
+            item.action_type = value["action_type"]
+            self.refresh()
+            self.model_changed.emit()
 
+    def delete_device(self):
+        uid = self._selected_hierarchy_uid()
+        if uid is None:
+            QMessageBox.information(self, "選択", "削除する機器項目を選択してください。")
+            return
+
+        descendants = set()
+        stack = [uid]
+        while stack:
+            cur = stack.pop()
+            descendants.add(cur)
+            stack.extend([x.uid for x in self.model.children_of(cur)])
+
+        related_action_uids = [a.uid for a in self.model.action_definitions if a.small_item_uid in descendants]
+        self.model_about_to_change.emit("機器削除")
+        self.model.operations = [op for op in self.model.operations if op.action_uid not in related_action_uids]
+        self.model.action_definitions = [a for a in self.model.action_definitions if a.small_item_uid not in descendants]
+        self.model.hierarchy_items = [h for h in self.model.hierarchy_items if h.uid not in descendants]
+        self.refresh()
+        self.model_changed.emit()
+
+    def add_action(self):
+        small_uid = self._selected_small_uid()
+        if small_uid is None:
+            QMessageBox.information(self, "選択", "動作追加は小項目を選択して実行してください。")
+            return
+        dlg = ActionDefinitionDialog(self.model, fixed_small_uid=small_uid, parent=self)
+        if dlg.exec():
+            try:
+                value = dlg.get_value()
+            except ValueError:
+                QMessageBox.warning(self, "入力エラー", "動作番号は数値で入力してください。")
+                return
+            if not value["name"]:
+                QMessageBox.warning(self, "入力不足", "動作名を入力してください。")
+                return
+            self.model_about_to_change.emit("動作追加")
             self.model.action_definitions.append(ActionDefinition(
                 uid=self.model.next_action_uid(),
-                small_item_uid=small_uid,
+                small_item_uid=value["small_item_uid"],
                 action_no=value["action_no"],
-                name=value["action_name"],
-                action_type=value["action_type"],
+                name=value["name"],
                 points=value["points"],
             ))
             self.refresh()
             self.model_changed.emit()
 
-    def edit_row(self):
-        action_uid = self._selected_action_uid()
+    def edit_action(self):
+        small_uid = self._selected_small_uid()
+        if small_uid is None:
+            QMessageBox.information(self, "選択", "動作編集は小項目を選択して実行してください。")
+            return
+        action_uid = self._choose_action_for_small(small_uid)
         if action_uid is None:
-            QMessageBox.information(self, "選択", "編集する動作を選択してください。")
             return
         action = self.model.get_action_def(action_uid)
         if not action:
             return
-
-        dlg = DeviceActionRowDialog(self.model, action_def=action, parent=self)
+        dlg = ActionDefinitionDialog(self.model, action_def=action, fixed_small_uid=small_uid, parent=self)
         if dlg.exec():
             try:
                 value = dlg.get_value()
             except ValueError:
-                QMessageBox.warning(self, "入力エラー", "ID・動作番号は数値で入力してください。")
+                QMessageBox.warning(self, "入力エラー", "動作番号は数値で入力してください。")
                 return
-
-            if not value["large_name"] or not value["middle_name"] or not value["small_name"] or not value["action_name"]:
-                QMessageBox.warning(self, "入力不足", "大項目 / 中項目 / 小項目 / 動作 を入力してください。")
+            if not value["name"]:
+                QMessageBox.warning(self, "入力不足", "動作名を入力してください。")
                 return
-
-            self.model_about_to_change.emit("機器一覧編集")
-            large_uid = self._resolve_or_create_hierarchy("large", value["large_existing"], None, value["large_id"], value["large_name"])
-            middle_uid = self._resolve_or_create_hierarchy("middle", value["middle_existing"], large_uid, value["middle_id"], value["middle_name"])
-            small_uid = self._resolve_or_create_hierarchy("small", value["small_existing"], middle_uid, value["small_id"], value["small_name"])
-
-            action.small_item_uid = small_uid
+            self.model_about_to_change.emit("動作編集")
+            action.small_item_uid = value["small_item_uid"]
             action.action_no = value["action_no"]
-            action.name = value["action_name"]
-            action.action_type = value["action_type"]
+            action.name = value["name"]
             action.points = value["points"]
-
-            self._cleanup_orphans()
             self.refresh()
             self.model_changed.emit()
 
-    def delete_row(self):
-        action_uid = self._selected_action_uid()
-        if action_uid is None:
-            QMessageBox.information(self, "選択", "削除する動作を選択してください。")
+    def delete_action(self):
+        small_uid = self._selected_small_uid()
+        if small_uid is None:
+            QMessageBox.information(self, "選択", "動作削除は小項目を選択して実行してください。")
             return
-        self.model_about_to_change.emit("機器一覧削除")
+        action_uid = self._choose_action_for_small(small_uid)
+        if action_uid is None:
+            return
+        self.model_about_to_change.emit("動作削除")
         self.model.operations = [op for op in self.model.operations if op.action_uid != action_uid]
         self.model.action_definitions = [a for a in self.model.action_definitions if a.uid != action_uid]
-        self._cleanup_orphans()
         self.refresh()
         self.model_changed.emit()
-
-    def _resolve_or_create_hierarchy(self, level: str, existing_value, parent_uid: Optional[int], id_number: int, name: str) -> int:
-        if isinstance(existing_value, int):
-            item = self.model.get_hierarchy(existing_value)
-            if item:
-                item.id_number = id_number
-                item.name = name
-                item.parent_uid = parent_uid
-                item.level = level
-                return item.uid
-
-        uid = self.model.next_hierarchy_uid()
-        self.model.hierarchy_items.append(HierarchyItem(
-            uid=uid,
-            id_number=id_number,
-            name=name,
-            level=level,
-            parent_uid=parent_uid,
-        ))
-        return uid
-
-    def _cleanup_orphans(self):
-        used_small = {a.small_item_uid for a in self.model.action_definitions}
-        self.model.hierarchy_items = [
-            x for x in self.model.hierarchy_items
-            if x.level != "small" or x.uid in used_small
-        ]
-        used_middle = {x.parent_uid for x in self.model.hierarchy_items if x.level == "small" and x.parent_uid is not None}
-        self.model.hierarchy_items = [
-            x for x in self.model.hierarchy_items
-            if x.level != "middle" or x.uid in used_middle
-        ]
-        used_large = {x.parent_uid for x in self.model.hierarchy_items if x.level == "middle" and x.parent_uid is not None}
-        self.model.hierarchy_items = [
-            x for x in self.model.hierarchy_items
-            if x.level != "large" or x.uid in used_large
-        ]
 
 
 class OperationsTab(QWidget):
@@ -1343,17 +1373,17 @@ class MainWindow(QMainWindow):
     def _load_sample_data(self):
         large1 = HierarchyItem(uid=1, id_number=1, name="設備A", level="large", parent_uid=None)
         middle1 = HierarchyItem(uid=2, id_number=1, name="搬送ユニット", level="middle", parent_uid=1)
-        small1 = HierarchyItem(uid=3, id_number=1, name="Z軸", level="small", parent_uid=2)
-        small2 = HierarchyItem(uid=4, id_number=2, name="吸着センサ", level="small", parent_uid=2)
+        small1 = HierarchyItem(uid=3, id_number=1, name="Z軸", level="small", parent_uid=2, action_type="points")
+        small2 = HierarchyItem(uid=4, id_number=2, name="吸着センサ", level="small", parent_uid=2, action_type="onoff")
         large2 = HierarchyItem(uid=5, id_number=2, name="設備B", level="large", parent_uid=None)
         middle2 = HierarchyItem(uid=6, id_number=1, name="検査ユニット", level="middle", parent_uid=5)
-        small3 = HierarchyItem(uid=7, id_number=1, name="検査シリンダ", level="small", parent_uid=6)
+        small3 = HierarchyItem(uid=7, id_number=1, name="検査シリンダ", level="small", parent_uid=6, action_type="points")
 
         self.model.hierarchy_items = [large1, middle1, small1, small2, large2, middle2, small3]
         self.model.action_definitions = [
-            ActionDefinition(uid=1, small_item_uid=3, action_no=1, name="位置移動", action_type="points", points=["ポイント1", "ポイント2", "ポイント3"]),
-            ActionDefinition(uid=2, small_item_uid=4, action_no=1, name="検出", action_type="onoff", points=["OFF", "ON"]),
-            ActionDefinition(uid=3, small_item_uid=7, action_no=1, name="前進後退", action_type="points", points=["後退", "中間", "前進"]),
+            ActionDefinition(uid=1, small_item_uid=3, action_no=1, name="位置移動", points=["ポイント1", "ポイント2", "ポイント3"]),
+            ActionDefinition(uid=2, small_item_uid=4, action_no=1, name="検出", points=["OFF", "ON"]),
+            ActionDefinition(uid=3, small_item_uid=7, action_no=1, name="前進後退", points=["後退", "中間", "前進"]),
         ]
         self.model.operations = [
             OperationInstance(uid=1, action_uid=1, name="Z軸 上昇", duration_ms=1200, start_trigger="manual", trigger_operation_uid=None, from_value="ポイント1", to_value="ポイント3"),
