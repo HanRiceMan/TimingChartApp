@@ -167,18 +167,50 @@ class AppModel:
         if not small:
             return []
         if small.action_type == "onoff":
-            values = ["ON", "OFF"]
-            extras = []
-            for a in self.action_definitions:
-                if a.small_item_uid == small_uid:
-                    extras.extend([p for p in a.points if p not in values])
-            return values + extras
+            return ["ON", "OFF"]
         values = []
         for a in sorted([x for x in self.action_definitions if x.small_item_uid == small_uid], key=lambda x: (x.action_no, x.uid)):
             for p in a.points:
                 if p not in values:
                     values.append(p)
         return values
+
+
+    def normalize_onoff_points(self):
+        for small in self.small_items():
+            if small.action_type != "onoff":
+                continue
+            actions = sorted(
+                [a for a in self.action_definitions if a.small_item_uid == small.uid],
+                key=lambda x: (x.action_no, x.uid)
+            )
+            if not actions:
+                self.action_definitions.append(ActionDefinition(
+                    uid=self.next_action_uid(),
+                    small_item_uid=small.uid,
+                    action_no=1,
+                    name="ON",
+                    points=["ON", "OFF"],
+                ))
+                self.action_definitions.append(ActionDefinition(
+                    uid=self.next_action_uid(),
+                    small_item_uid=small.uid,
+                    action_no=2,
+                    name="OFF",
+                    points=["ON", "OFF"],
+                ))
+                continue
+            first = actions[0]
+            first.action_no = 1
+            first.name = "ON"
+            first.points = ["ON", "OFF"]
+            for idx, a in enumerate(actions[1:], start=2):
+                a.action_no = idx
+                if idx == 2:
+                    a.name = "OFF"
+                elif a.name in ("ON", "OFF"):
+                    a.name = f"追加{idx-2}"
+                a.points = ["ON", "OFF"]
 
 
     # ---------- persistence ----------
@@ -196,6 +228,7 @@ class AppModel:
             self.hierarchy_items = [HierarchyItem(**x) for x in data.get("hierarchy_items", [])]
             self.action_definitions = [ActionDefinition(**x) for x in data.get("action_definitions", [])]
             self.operations = [OperationInstance(**x) for x in data.get("operations", [])]
+            self.normalize_onoff_points()
             return
 
         # backward compatibility for old schema
@@ -293,6 +326,8 @@ class AppModel:
         for old, new in zip(old_ops, self.operations):
             trig = old.get("trigger_operation_id")
             new.start_operation_uid = old_to_new_op.get(trig) if trig is not None else None
+
+        self.normalize_onoff_points()
 
     def clone_data(self) -> Dict:
         return copy.deepcopy(self.to_dict())
@@ -441,10 +476,8 @@ class ActionDefinitionDialog(QDialog):
         self.points_edit.setEnabled(True)
         self.points_hint.setEnabled(True)
         if small and small.action_type == "onoff":
-            raw = [x.strip() for x in self.points_edit.text().split(",") if x.strip()]
-            rest = [x for x in raw if x not in ("ON", "OFF")]
-            self.points_edit.setText(", ".join(["ON", "OFF"] + rest))
-            self.points_hint.setText("onoff の場合は先頭2つを ON, OFF に固定します。追加ポイントは任意です。")
+            self.points_edit.setText("ON, OFF")
+            self.points_hint.setText("onoff の場合は 1:ON, 2:OFF に固定です。")
         else:
             self.points_hint.setText("points の場合のみ。例: 原点, 待機, 加工")
 
@@ -453,7 +486,7 @@ class ActionDefinitionDialog(QDialog):
         small = self.model.get_hierarchy(small_uid)
         raw_points = [x.strip() for x in self.points_edit.text().split(",") if x.strip()]
         if small and small.action_type == "onoff":
-            points = ["ON", "OFF"] + [x for x in raw_points if x not in ("ON", "OFF")]
+            points = ["ON", "OFF"]
         else:
             points = raw_points
         return {
@@ -475,11 +508,6 @@ class OperationDialog(QDialog):
         self.large_combo = QComboBox()
         self.middle_combo = QComboBox()
         self.small_combo = QComboBox()
-        self.operation_mode_combo = QComboBox()
-        self.operation_mode_combo.addItems(["ポイント移動", "ON-OFF"])
-        self.time_mode_combo = QComboBox()
-        self.time_mode_combo.addItems(["直値指定"])
-
         self.duration_edit = QLineEdit("1000")
 
         self.start_trigger_combo = QComboBox()
@@ -502,16 +530,14 @@ class OperationDialog(QDialog):
         form.addRow("大項目", self.large_combo)
         form.addRow("中項目", self.middle_combo)
         form.addRow("小項目", self.small_combo)
-        form.addRow("動作設定", self.operation_mode_combo)
-        form.addRow("時間設定", self.time_mode_combo)
-        form.addRow("時間(ms)", self.duration_edit)
+        form.addRow("開始ポイント", self.from_combo)
+        form.addRow("終了ポイント", self.to_combo)
         form.addRow("開始トリガ", self.start_trigger_combo)
         form.addRow("開始依存元動作UID", self.start_dep_combo)
         form.addRow("終了設定", self.end_mode_combo)
         form.addRow("終了トリガ", self.end_trigger_combo)
         form.addRow("終了依存元動作UID", self.end_dep_combo)
-        form.addRow("開始ポイント", self.from_combo)
-        form.addRow("終了ポイント", self.to_combo)
+        form.addRow("時間(ms)", self.duration_edit)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -550,8 +576,6 @@ class OperationDialog(QDialog):
                     idx = self.small_combo.findData(small.uid)
                     if idx >= 0:
                         self.small_combo.setCurrentIndex(idx)
-            self.operation_mode_combo.setCurrentText(operation.operation_mode or "ポイント移動")
-            self.time_mode_combo.setCurrentText(operation.time_mode or "直値指定")
             self.duration_edit.setText(str(operation.duration_ms))
             self.start_trigger_combo.setCurrentText(operation.start_trigger or "時刻0")
             sdep = "" if operation.start_operation_uid is None else str(operation.start_operation_uid)
@@ -565,10 +589,10 @@ class OperationDialog(QDialog):
             if idx >= 0:
                 self.end_dep_combo.setCurrentIndex(idx)
             self._reload_points()
-            fidx = self.from_combo.findText(operation.from_value)
+            fidx = self.from_combo.findData(operation.from_value)
             if fidx >= 0:
                 self.from_combo.setCurrentIndex(fidx)
-            tidx = self.to_combo.findText(operation.to_value)
+            tidx = self.to_combo.findData(operation.to_value)
             if tidx >= 0:
                 self.to_combo.setCurrentIndex(tidx)
 
@@ -609,8 +633,10 @@ class OperationDialog(QDialog):
         if small_uid is None:
             return
         vals = self.model.point_options_for_small(int(small_uid))
-        self.from_combo.addItems(vals)
-        self.to_combo.addItems(vals)
+        for i, val in enumerate(vals, start=1):
+            label = f"{i}:{val}"
+            self.from_combo.addItem(label, val)
+            self.to_combo.addItem(label, val)
         if vals:
             self.from_combo.setCurrentIndex(0)
             self.to_combo.setCurrentIndex(min(1, len(vals)-1))
@@ -628,18 +654,20 @@ class OperationDialog(QDialog):
         action_uid = actions[0].uid if actions else None
         start_dep_raw = self.start_dep_combo.currentData()
         end_dep_raw = self.end_dep_combo.currentData()
+        small = self.model.get_hierarchy(small_uid)
+        operation_mode = "ON-OFF" if (small and small.action_type == "onoff") else "ポイント移動"
         return {
             "action_uid": action_uid,
-            "operation_mode": self.operation_mode_combo.currentText(),
-            "time_mode": self.time_mode_combo.currentText(),
+            "operation_mode": operation_mode,
+            "time_mode": "直値指定",
             "duration_ms": int(self.duration_edit.text().strip() or "0"),
             "start_trigger": self.start_trigger_combo.currentText(),
             "start_operation_uid": int(start_dep_raw) if start_dep_raw not in ("", None) else None,
             "end_mode": self.end_mode_combo.currentText(),
             "end_trigger": self.end_trigger_combo.currentText(),
             "end_operation_uid": int(end_dep_raw) if end_dep_raw not in ("", None) else None,
-            "from_value": self.from_combo.currentText(),
-            "to_value": self.to_combo.currentText(),
+            "from_value": self.from_combo.currentData(),
+            "to_value": self.to_combo.currentData(),
         }
 
 
@@ -1128,7 +1156,10 @@ class DeviceTab(QWidget):
 
 
     def _initialize_onoff_points(self, small_uid: int):
-        actions = sorted([a for a in self.model.action_definitions if a.small_item_uid == small_uid], key=lambda x: (x.action_no, x.uid))
+        actions = sorted(
+            [a for a in self.model.action_definitions if a.small_item_uid == small_uid],
+            key=lambda x: (x.action_no, x.uid)
+        )
         if not actions:
             self.model.action_definitions.append(ActionDefinition(
                 uid=self.model.next_action_uid(),
@@ -1137,20 +1168,25 @@ class DeviceTab(QWidget):
                 name="ON",
                 points=["ON", "OFF"],
             ))
+            self.model.action_definitions.append(ActionDefinition(
+                uid=self.model.next_action_uid(),
+                small_item_uid=small_uid,
+                action_no=2,
+                name="OFF",
+                points=["ON", "OFF"],
+            ))
             return
         first = actions[0]
-        extras = []
-        for a in actions:
-            for p in a.points:
-                if p not in ("ON", "OFF"):
-                    extras.append(p)
         first.action_no = 1
         first.name = "ON"
-        first.points = ["ON", "OFF"] + [x for x in extras if x not in ("ON", "OFF")]
+        first.points = ["ON", "OFF"]
         for idx, a in enumerate(actions[1:], start=2):
             a.action_no = idx
-            if a.name in ("ON","OFF"):
-                a.name = f"追加{idx-1}"
+            if idx == 2:
+                a.name = "OFF"
+            elif a.name in ("ON", "OFF"):
+                a.name = f"追加{idx-2}"
+            a.points = ["ON", "OFF"]
 
     def add_action(self):
         small_uid = self._selected_small_uid()
@@ -1175,6 +1211,7 @@ class DeviceTab(QWidget):
                 name=value["name"],
                 points=value["points"],
             ))
+            self.model.normalize_onoff_points()
             self.refresh()
             self.model_changed.emit()
 
@@ -1204,6 +1241,7 @@ class DeviceTab(QWidget):
             action.action_no = value["action_no"]
             action.name = value["name"]
             action.points = value["points"]
+            self.model.normalize_onoff_points()
             self.refresh()
             self.model_changed.emit()
 
@@ -1232,13 +1270,12 @@ class OperationsTab(QWidget):
         self.model = model
 
         layout = QVBoxLayout(self)
-        self.table = QTableWidget(0, 14)
+        self.table = QTableWidget(0, 12)
         self.table.setHorizontalHeaderLabels([
-            "動作UID", "大項目", "中項目", "小項目", "動作設定", "時間設定", "時間(ms)",
-            "開始トリガ", "開始依存元動作UID", "終了設定", "終了トリガ", "終了依存元動作UID",
-            "開始ポイント", "終了ポイント"
+            "動作UID", "大項目", "中項目", "小項目", "開始ポイント", "終了ポイント",
+            "開始トリガ", "開始依存元動作UID", "終了設定", "終了トリガ", "終了依存元動作UID", "時間(ms)"
         ])
-        for i in range(14):
+        for i in range(12):
             self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.Interactive)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         layout.addWidget(self.table)
@@ -1270,21 +1307,29 @@ class OperationsTab(QWidget):
             small = self.model.get_hierarchy(action.small_item_uid) if action else None
             middle = self.model.get_middle_for_small(action.small_item_uid) if action else None
             large = self.model.get_large_for_small(action.small_item_uid) if action else None
+            point_options = self.model.point_options_for_small(action.small_item_uid) if action else []
+            def point_label(value: str) -> str:
+                if not value:
+                    return ""
+                try:
+                    idx = point_options.index(value) + 1
+                    return f"{idx}:{value}"
+                except ValueError:
+                    return value
+
             vals = [
                 str(op.uid),
                 f"{large.id_number} {large.name}" if large else "",
                 f"{middle.id_number} {middle.name}" if middle else "",
                 f"{small.id_number} {small.name}" if small else "",
-                op.operation_mode,
-                op.time_mode,
-                str(op.duration_ms),
+                point_label(op.from_value),
+                point_label(op.to_value),
                 op.start_trigger,
                 "-" if op.start_operation_uid is None else str(op.start_operation_uid),
                 op.end_mode,
                 op.end_trigger if op.end_mode == "トリガ指定" else "-",
                 "-" if op.end_operation_uid is None else str(op.end_operation_uid),
-                op.from_value,
-                op.to_value,
+                str(op.duration_ms),
             ]
             for c, v in enumerate(vals):
                 item = QTableWidgetItem(v)
@@ -1609,24 +1654,77 @@ class MainWindow(QMainWindow):
         self.model.action_definitions = [
             ActionDefinition(uid=1, small_item_uid=3, action_no=1, name="上昇", points=["原点", "待機", "上限"]),
             ActionDefinition(uid=2, small_item_uid=3, action_no=2, name="下降", points=["原点", "待機", "上限"]),
-            ActionDefinition(uid=3, small_item_uid=4, action_no=1, name="吸着出力", points=["ON", "OFF"]),
-            ActionDefinition(uid=4, small_item_uid=8, action_no=1, name="クランプ出力", points=["ON", "OFF", "保持"]),
+            ActionDefinition(uid=3, small_item_uid=4, action_no=1, name="ON", points=["ON", "OFF"]),
+            ActionDefinition(uid=3, small_item_uid=4, action_no=2, name="OFF", points=["ON", "OFF"]),
+            ActionDefinition(uid=4, small_item_uid=8, action_no=1, name="ON", points=["ON", "OFF"]),
+            ActionDefinition(uid=4, small_item_uid=8, action_no=2, name="OFF", points=["ON", "OFF"]),
             ActionDefinition(uid=5, small_item_uid=6, action_no=1, name="供給移動", points=["受取", "待機", "供給"]),
-            ActionDefinition(uid=6, small_item_uid=7, action_no=1, name="ワーク検知", points=["ON", "OFF"]),
+            ActionDefinition(uid=6, small_item_uid=7, action_no=1, name="ON", points=["ON", "OFF"]),
+            ActionDefinition(uid=6, small_item_uid=7, action_no=2, name="OFF", points=["ON", "OFF"]),
             ActionDefinition(uid=7, small_item_uid=11, action_no=1, name="前進後退", points=["後退", "中間", "前進"]),
-            ActionDefinition(uid=8, small_item_uid=12, action_no=1, name="判定出力", points=["ON", "OFF"]),
+            ActionDefinition(uid=8, small_item_uid=12, action_no=1, name="ON", points=["ON", "OFF"]),
+            ActionDefinition(uid=8, small_item_uid=12, action_no=2, name="OFF", points=["ON", "OFF"]),
         ]
 
         self.model.operations = [
-            OperationInstance(uid=1, action_uid=1, name="Z軸 上昇", duration_ms=1200, start_trigger="manual", trigger_operation_uid=None, from_value="原点", to_value="上限"),
-            OperationInstance(uid=2, action_uid=3, name="吸着ON", duration_ms=300, start_trigger="after_finish", trigger_operation_uid=1, from_value="OFF", to_value="ON"),
-            OperationInstance(uid=3, action_uid=4, name="クランプON", duration_ms=200, start_trigger="after_finish", trigger_operation_uid=2, from_value="OFF", to_value="ON"),
-            OperationInstance(uid=4, action_uid=5, name="供給X 前進", duration_ms=900, start_trigger="after_start", trigger_operation_uid=3, from_value="待機", to_value="供給"),
-            OperationInstance(uid=5, action_uid=6, name="ワーク検知ON", duration_ms=150, start_trigger="after_finish", trigger_operation_uid=4, from_value="OFF", to_value="ON"),
-            OperationInstance(uid=6, action_uid=7, name="検査シリンダ前進", duration_ms=800, start_trigger="after_finish", trigger_operation_uid=5, from_value="後退", to_value="前進"),
-            OperationInstance(uid=7, action_uid=8, name="OK判定ON", duration_ms=250, start_trigger="after_finish", trigger_operation_uid=6, from_value="OFF", to_value="ON"),
-            OperationInstance(uid=8, action_uid=3, name="吸着OFF", duration_ms=300, start_trigger="after_finish", trigger_operation_uid=7, from_value="ON", to_value="OFF"),
+            OperationInstance(
+                uid=1, action_uid=1, duration_ms=1200,
+                operation_mode="ポイント移動", time_mode="直値指定",
+                start_trigger="時刻0", start_operation_uid=None,
+                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
+                from_value="原点", to_value="上限",
+            ),
+            OperationInstance(
+                uid=2, action_uid=3, duration_ms=300,
+                operation_mode="ON-OFF", time_mode="直値指定",
+                start_trigger="終了", start_operation_uid=1,
+                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
+                from_value="OFF", to_value="ON",
+            ),
+            OperationInstance(
+                uid=3, action_uid=4, duration_ms=200,
+                operation_mode="ON-OFF", time_mode="直値指定",
+                start_trigger="終了", start_operation_uid=2,
+                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
+                from_value="OFF", to_value="ON",
+            ),
+            OperationInstance(
+                uid=4, action_uid=5, duration_ms=900,
+                operation_mode="ポイント移動", time_mode="直値指定",
+                start_trigger="開始", start_operation_uid=3,
+                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
+                from_value="待機", to_value="供給",
+            ),
+            OperationInstance(
+                uid=5, action_uid=6, duration_ms=150,
+                operation_mode="ON-OFF", time_mode="直値指定",
+                start_trigger="終了", start_operation_uid=4,
+                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
+                from_value="OFF", to_value="ON",
+            ),
+            OperationInstance(
+                uid=6, action_uid=7, duration_ms=800,
+                operation_mode="ポイント移動", time_mode="直値指定",
+                start_trigger="終了", start_operation_uid=5,
+                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
+                from_value="後退", to_value="前進",
+            ),
+            OperationInstance(
+                uid=7, action_uid=8, duration_ms=250,
+                operation_mode="ON-OFF", time_mode="直値指定",
+                start_trigger="終了", start_operation_uid=6,
+                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
+                from_value="OFF", to_value="ON",
+            ),
+            OperationInstance(
+                uid=8, action_uid=3, duration_ms=300,
+                operation_mode="ON-OFF", time_mode="直値指定",
+                start_trigger="終了", start_operation_uid=7,
+                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
+                from_value="ON", to_value="OFF",
+            ),
         ]
+        self.model.normalize_onoff_points()
 
 
 def main():
