@@ -508,11 +508,6 @@ class OperationDialog(QDialog):
         self.large_combo = QComboBox()
         self.middle_combo = QComboBox()
         self.small_combo = QComboBox()
-        self.operation_mode_combo = QComboBox()
-        self.operation_mode_combo.addItems(["ポイント移動", "ON-OFF"])
-        self.time_mode_combo = QComboBox()
-        self.time_mode_combo.addItems(["直値指定"])
-
         self.duration_edit = QLineEdit("1000")
 
         self.start_trigger_combo = QComboBox()
@@ -535,16 +530,14 @@ class OperationDialog(QDialog):
         form.addRow("大項目", self.large_combo)
         form.addRow("中項目", self.middle_combo)
         form.addRow("小項目", self.small_combo)
-        form.addRow("動作設定", self.operation_mode_combo)
-        form.addRow("時間設定", self.time_mode_combo)
-        form.addRow("時間(ms)", self.duration_edit)
+        form.addRow("開始ポイント", self.from_combo)
+        form.addRow("終了ポイント", self.to_combo)
         form.addRow("開始トリガ", self.start_trigger_combo)
         form.addRow("開始依存元動作UID", self.start_dep_combo)
         form.addRow("終了設定", self.end_mode_combo)
         form.addRow("終了トリガ", self.end_trigger_combo)
         form.addRow("終了依存元動作UID", self.end_dep_combo)
-        form.addRow("開始ポイント", self.from_combo)
-        form.addRow("終了ポイント", self.to_combo)
+        form.addRow("時間(ms)", self.duration_edit)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -583,8 +576,6 @@ class OperationDialog(QDialog):
                     idx = self.small_combo.findData(small.uid)
                     if idx >= 0:
                         self.small_combo.setCurrentIndex(idx)
-            self.operation_mode_combo.setCurrentText(operation.operation_mode or "ポイント移動")
-            self.time_mode_combo.setCurrentText(operation.time_mode or "直値指定")
             self.duration_edit.setText(str(operation.duration_ms))
             self.start_trigger_combo.setCurrentText(operation.start_trigger or "時刻0")
             sdep = "" if operation.start_operation_uid is None else str(operation.start_operation_uid)
@@ -598,10 +589,10 @@ class OperationDialog(QDialog):
             if idx >= 0:
                 self.end_dep_combo.setCurrentIndex(idx)
             self._reload_points()
-            fidx = self.from_combo.findText(operation.from_value)
+            fidx = self.from_combo.findData(operation.from_value)
             if fidx >= 0:
                 self.from_combo.setCurrentIndex(fidx)
-            tidx = self.to_combo.findText(operation.to_value)
+            tidx = self.to_combo.findData(operation.to_value)
             if tidx >= 0:
                 self.to_combo.setCurrentIndex(tidx)
 
@@ -642,8 +633,10 @@ class OperationDialog(QDialog):
         if small_uid is None:
             return
         vals = self.model.point_options_for_small(int(small_uid))
-        self.from_combo.addItems(vals)
-        self.to_combo.addItems(vals)
+        for i, val in enumerate(vals, start=1):
+            label = f"{i}:{val}"
+            self.from_combo.addItem(label, val)
+            self.to_combo.addItem(label, val)
         if vals:
             self.from_combo.setCurrentIndex(0)
             self.to_combo.setCurrentIndex(min(1, len(vals)-1))
@@ -661,18 +654,20 @@ class OperationDialog(QDialog):
         action_uid = actions[0].uid if actions else None
         start_dep_raw = self.start_dep_combo.currentData()
         end_dep_raw = self.end_dep_combo.currentData()
+        small = self.model.get_hierarchy(small_uid)
+        operation_mode = "ON-OFF" if (small and small.action_type == "onoff") else "ポイント移動"
         return {
             "action_uid": action_uid,
-            "operation_mode": self.operation_mode_combo.currentText(),
-            "time_mode": self.time_mode_combo.currentText(),
+            "operation_mode": operation_mode,
+            "time_mode": "直値指定",
             "duration_ms": int(self.duration_edit.text().strip() or "0"),
             "start_trigger": self.start_trigger_combo.currentText(),
             "start_operation_uid": int(start_dep_raw) if start_dep_raw not in ("", None) else None,
             "end_mode": self.end_mode_combo.currentText(),
             "end_trigger": self.end_trigger_combo.currentText(),
             "end_operation_uid": int(end_dep_raw) if end_dep_raw not in ("", None) else None,
-            "from_value": self.from_combo.currentText(),
-            "to_value": self.to_combo.currentText(),
+            "from_value": self.from_combo.currentData(),
+            "to_value": self.to_combo.currentData(),
         }
 
 
@@ -1275,13 +1270,12 @@ class OperationsTab(QWidget):
         self.model = model
 
         layout = QVBoxLayout(self)
-        self.table = QTableWidget(0, 14)
+        self.table = QTableWidget(0, 12)
         self.table.setHorizontalHeaderLabels([
-            "動作UID", "大項目", "中項目", "小項目", "動作設定", "時間設定", "時間(ms)",
-            "開始トリガ", "開始依存元動作UID", "終了設定", "終了トリガ", "終了依存元動作UID",
-            "開始ポイント", "終了ポイント"
+            "動作UID", "大項目", "中項目", "小項目", "開始ポイント", "終了ポイント",
+            "開始トリガ", "開始依存元動作UID", "終了設定", "終了トリガ", "終了依存元動作UID", "時間(ms)"
         ])
-        for i in range(14):
+        for i in range(12):
             self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.Interactive)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         layout.addWidget(self.table)
@@ -1313,21 +1307,29 @@ class OperationsTab(QWidget):
             small = self.model.get_hierarchy(action.small_item_uid) if action else None
             middle = self.model.get_middle_for_small(action.small_item_uid) if action else None
             large = self.model.get_large_for_small(action.small_item_uid) if action else None
+            point_options = self.model.point_options_for_small(action.small_item_uid) if action else []
+            def point_label(value: str) -> str:
+                if not value:
+                    return ""
+                try:
+                    idx = point_options.index(value) + 1
+                    return f"{idx}:{value}"
+                except ValueError:
+                    return value
+
             vals = [
                 str(op.uid),
                 f"{large.id_number} {large.name}" if large else "",
                 f"{middle.id_number} {middle.name}" if middle else "",
                 f"{small.id_number} {small.name}" if small else "",
-                op.operation_mode,
-                op.time_mode,
-                str(op.duration_ms),
+                point_label(op.from_value),
+                point_label(op.to_value),
                 op.start_trigger,
                 "-" if op.start_operation_uid is None else str(op.start_operation_uid),
                 op.end_mode,
                 op.end_trigger if op.end_mode == "トリガ指定" else "-",
                 "-" if op.end_operation_uid is None else str(op.end_operation_uid),
-                op.from_value,
-                op.to_value,
+                str(op.duration_ms),
             ]
             for c, v in enumerate(vals):
                 item = QTableWidgetItem(v)
