@@ -1314,7 +1314,6 @@ class OperationsTab(QWidget):
         self.del_btn.clicked.connect(self.delete_operation)
         self.refresh_btn.clicked.connect(self.refresh)
         self.table.itemDoubleClicked.connect(lambda _: self.edit_operation())
-        self.table.horizontalHeader().sortIndicatorChanged.connect(lambda *_: self._renumber_no_column())
 
         self.refresh()
 
@@ -1360,18 +1359,8 @@ class OperationsTab(QWidget):
                 self.table.setItem(r, c, item)
 
         self.table.setSortingEnabled(True)
-        self._renumber_no_column()
         if current_uid is not None:
             self._select_operation_uid(current_uid)
-
-    def _renumber_no_column(self):
-        for r in range(self.table.rowCount()):
-            item = self.table.item(r, 0)
-            if item is None:
-                item = NumericTableWidgetItem(str(r + 1))
-                self.table.setItem(r, 0, item)
-            else:
-                item.setText(str(r + 1))
 
     def _select_operation_uid(self, op_uid: int):
         for r in range(self.table.rowCount()):
