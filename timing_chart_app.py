@@ -855,6 +855,22 @@ class TimingChartView(QGraphicsView):
         graph_header = scene.addSimpleText("タイミングチャート")
         graph_header.setPos(left_w + 14, 18)
 
+        # Rows and labels
+        for s in smalls:
+            row = row_map[s.uid]
+            top = header_h + row * row_h
+            left_bg = QColor(250, 251, 252) if row % 2 == 0 else QColor(243, 246, 248)
+            graph_bg = QColor(252, 253, 254) if row % 2 == 0 else QColor(248, 250, 252)
+            scene.addRect(0, top, left_w, row_h, QPen(QColor(220, 225, 230)), QBrush(left_bg))
+            scene.addRect(left_w, top, graph_w, row_h, QPen(QColor(232, 236, 240)), QBrush(graph_bg))
+            scene.addLine(0, top + row_h, total_w, top + row_h, QPen(QColor(224, 228, 233), 1))
+
+            large = model.get_large_for_small(s.uid)
+            middle = model.get_middle_for_small(s.uid)
+            label_text = f"{large.id_number if large else '-'}-{middle.id_number if middle else '-'}-{s.id_number}  {model.hierarchy_path(s.uid)}"
+            label = scene.addSimpleText(label_text)
+            label.setPos(12, top + 12)
+
         # Time ruler and grid
         minor_step = 100
         major_step = 500
@@ -868,27 +884,12 @@ class TimingChartView(QGraphicsView):
                 txt.setPos(x + 4, 8)
                 tick_h = 18
             else:
-                pen = QPen(QColor(230, 233, 237), 1)
+                pen = QPen(QColor(222, 226, 231), 1)
                 pen.setStyle(Qt.DotLine)
                 scene.addLine(x, header_h, x, total_h - 28, pen)
                 tick_h = 10
             scene.addLine(x, header_h - tick_h, x, header_h, QPen(QColor(150, 156, 165), 1))
             t += minor_step
-
-        # Rows and labels
-        for s in smalls:
-            row = row_map[s.uid]
-            top = header_h + row * row_h
-            left_bg = QColor(250, 251, 252) if row % 2 == 0 else QColor(243, 246, 248)
-            scene.addRect(0, top, left_w, row_h, QPen(QColor(220, 225, 230)), QBrush(left_bg))
-            scene.addRect(left_w, top, graph_w, row_h, QPen(QColor(232, 236, 240)), QBrush(QColor(255, 255, 255)))
-            scene.addLine(0, top + row_h, total_w, top + row_h, QPen(QColor(224, 228, 233), 1))
-
-            large = model.get_large_for_small(s.uid)
-            middle = model.get_middle_for_small(s.uid)
-            label_text = f"{large.id_number if large else '-'}-{middle.id_number if middle else '-'}-{s.id_number}  {model.hierarchy_path(s.uid)}"
-            label = scene.addSimpleText(label_text)
-            label.setPos(12, top + 12)
 
         op_anchor: Dict[int, Dict[str, QPointF]] = {}
 
