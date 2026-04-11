@@ -1360,7 +1360,6 @@ class OperationsTab(QWidget):
                 self.table.setItem(r, c, item)
 
         self.table.setSortingEnabled(True)
-        self.table.sortItems(1, Qt.AscendingOrder)
         self._renumber_no_column()
         if current_uid is not None:
             self._select_operation_uid(current_uid)
