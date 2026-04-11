@@ -772,6 +772,7 @@ class SelectableOpRect(QGraphicsRectItem):
 
 
 
+
 class TimingChartView(QGraphicsView):
     dependency_created = Signal(int, int)  # source_uid, target_uid
 
@@ -823,20 +824,33 @@ class TimingChartView(QGraphicsView):
             hint.setPos(20, y + 12)
             return
 
-        row_h = 88
-        left_w = 380
-        header_h = 64
+        row_h = 108
+        header_h = 76
+
+        col_large = 90
+        col_middle = 120
+        col_small = 200
+        col_points = 150
+        left_w = col_large + col_middle + col_small + col_points
+
         time_scale = 0.16
         max_time = max([end for _, end in schedule.values()], default=3000)
         graph_w = max(1800, int(max_time * time_scale) + 500)
         total_w = left_w + graph_w
-        total_h = max(900, header_h + max(1, len(model.small_items())) * row_h + 120)
+        total_h = max(920, header_h + max(1, len(model.small_items())) * row_h + 120)
         scene.setSceneRect(0, 0, total_w, total_h)
 
-        # Left / right regions
+        # Region backgrounds
         scene.addRect(0, 0, left_w, total_h, QPen(QColor(205, 210, 216)), QBrush(QColor(245, 247, 249)))
         scene.addRect(left_w, 0, graph_w, total_h, QPen(QColor(210, 214, 220)), QBrush(QColor(255, 255, 255)))
         scene.addRect(0, 0, total_w, header_h, QPen(QColor(200, 205, 212)), QBrush(QColor(236, 240, 244)))
+
+        x_large = col_large
+        x_middle = col_large + col_middle
+        x_small = col_large + col_middle + col_small
+        scene.addLine(x_large, 0, x_large, total_h, QPen(QColor(210, 214, 220), 1))
+        scene.addLine(x_middle, 0, x_middle, total_h, QPen(QColor(210, 214, 220), 1))
+        scene.addLine(x_small, 0, x_small, total_h, QPen(QColor(210, 214, 220), 1))
         scene.addLine(left_w, 0, left_w, total_h, QPen(QColor(110, 120, 135), 2))
 
         smalls = sorted(
@@ -850,12 +864,13 @@ class TimingChartView(QGraphicsView):
         )
         row_map = {s.uid: i for i, s in enumerate(smalls)}
 
-        left_header = scene.addSimpleText("項目")
-        left_header.setPos(14, 18)
-        graph_header = scene.addSimpleText("タイミングチャート")
-        graph_header.setPos(left_w + 14, 18)
+        # Header labels
+        scene.addSimpleText("大項目").setPos(12, 18)
+        scene.addSimpleText("中項目").setPos(col_large + 12, 18)
+        scene.addSimpleText("小項目").setPos(col_large + col_middle + 12, 18)
+        scene.addSimpleText("ポイント").setPos(col_large + col_middle + col_small + 12, 18)
 
-        # Rows and labels
+        # Left rows / labels
         for s in smalls:
             row = row_map[s.uid]
             top = header_h + row * row_h
@@ -867,9 +882,16 @@ class TimingChartView(QGraphicsView):
 
             large = model.get_large_for_small(s.uid)
             middle = model.get_middle_for_small(s.uid)
-            label_text = f"{large.id_number if large else '-'}-{middle.id_number if middle else '-'}-{s.id_number}  {model.hierarchy_path(s.uid)}"
-            label = scene.addSimpleText(label_text)
-            label.setPos(12, top + 12)
+
+            scene.addSimpleText(f"{large.id_number} {large.name}" if large else "").setPos(10, top + 14)
+            scene.addSimpleText(f"{middle.id_number} {middle.name}" if middle else "").setPos(col_large + 10, top + 14)
+            scene.addSimpleText(f"{s.id_number} {s.name}").setPos(col_large + col_middle + 10, top + 14)
+
+            point_values = model.point_options_for_small(s.uid)
+            n = max(1, len(point_values) - 1)
+            for i, p in enumerate(point_values):
+                py = top + 18 + (row_h - 36) * (i / max(1, n))
+                scene.addSimpleText(f"{i+1}:{p}").setPos(col_large + col_middle + col_small + 10, py - 8)
 
         # Time ruler and grid
         minor_step = 100
@@ -907,35 +929,31 @@ class TimingChartView(QGraphicsView):
             x1 = left_w + start_time * time_scale
             x2 = left_w + end_time * time_scale
 
+            point_values = model.point_options_for_small(small_uid)
+            index_map = {p: i for i, p in enumerate(point_values)} if point_values else {}
+            n = max(1, len(point_values) - 1)
+
             small_item = model.get_hierarchy(action_def.small_item_uid)
             if small_item and small_item.action_type == "onoff":
-                y_off = top + row_h * 0.70
-                y_on = top + row_h * 0.28
-                y1 = y_on if op.from_value == "ON" else y_off
-                y2 = y_on if op.to_value == "ON" else y_off
+                y1 = top + 18 + (row_h - 36) * (0 if op.from_value == "ON" else 1)
+                y2 = top + 18 + (row_h - 36) * (0 if op.to_value == "ON" else 1)
                 pen = QPen(QColor(28, 124, 84), 3)
                 scene.addLine(x1, y1, x2, y2, pen)
                 if y1 != y2:
                     scene.addLine(x1, y1, x1, y2, pen)
                 hit_rect = QRectF(min(x1, x2), min(y1, y2) - 12, max(24, abs(x2 - x1)), abs(y2 - y1) + 24)
             else:
-                points = action_def.points or ["P1", "P2"]
-                index_map = {p: i for i, p in enumerate(points)}
-                n = max(1, len(points) - 1)
                 f_idx = index_map.get(op.from_value, 0)
                 t_idx = index_map.get(op.to_value, f_idx)
-                y1 = top + 16 + (row_h - 32) * (f_idx / max(1, n))
-                y2 = top + 16 + (row_h - 32) * (t_idx / max(1, n))
+                y1 = top + 18 + (row_h - 36) * (f_idx / max(1, n))
+                y2 = top + 18 + (row_h - 36) * (t_idx / max(1, n))
                 pen = QPen(QColor(45, 92, 191), 3)
                 scene.addLine(x1, y1, x2, y2, pen)
                 hit_rect = QRectF(min(x1, x2) - 8, min(y1, y2) - 12, max(24, abs(x2 - x1) + 16), abs(y2 - y1) + 24)
 
                 for p, i in index_map.items():
-                    py = top + 16 + (row_h - 32) * (i / max(1, n))
+                    py = top + 18 + (row_h - 36) * (i / max(1, n))
                     scene.addLine(left_w - 8, py, left_w, py, QPen(QColor(140, 140, 140)))
-                    if i < 8:
-                        label = scene.addSimpleText(p)
-                        label.setPos(left_w - 90, py - 8)
 
             hit = SelectableOpRect(hit_rect, op.uid, self._on_operation_clicked)
             hit.setBrush(QBrush(QColor(0, 0, 0, 1)))
