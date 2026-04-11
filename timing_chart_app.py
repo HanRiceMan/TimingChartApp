@@ -771,6 +771,7 @@ class SelectableOpRect(QGraphicsRectItem):
             self.callback(self.operation_uid)
 
 
+
 class TimingChartView(QGraphicsView):
     dependency_created = Signal(int, int)  # source_uid, target_uid
 
@@ -780,6 +781,13 @@ class TimingChartView(QGraphicsView):
         self.setScene(QGraphicsScene(self))
         self.link_mode = False
         self._pending_source_uid: Optional[int] = None
+
+        self.setMinimumSize(1500, 820)
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
 
     def set_link_mode(self, enabled: bool):
         self.link_mode = enabled
@@ -801,27 +809,35 @@ class TimingChartView(QGraphicsView):
 
         schedule, errors = calculate_schedule(model)
         if errors:
-            y = 20
-            scene.setSceneRect(0, 0, 1000, 300)
+            y = 24
+            scene.setSceneRect(0, 0, 1800, 900)
+            scene.addRect(0, 0, 1800, 900, QPen(QColor(210, 215, 220)), QBrush(QColor(250, 251, 252)))
             title = scene.addSimpleText("ERROR")
             title.setPos(20, y)
-            y += 30
+            y += 34
             for e in errors:
                 txt = scene.addSimpleText(f"- {e}")
                 txt.setPos(20, y)
-                y += 22
+                y += 24
             hint = scene.addSimpleText("Ctrl+Z で元に戻す / Ctrl+Y でやり直し")
-            hint.setPos(20, y + 10)
+            hint.setPos(20, y + 12)
             return
 
-        row_h = 80
-        left_w = 320
-        header_h = 50
-        time_scale = 0.12
+        row_h = 88
+        left_w = 380
+        header_h = 64
+        time_scale = 0.16
         max_time = max([end for _, end in schedule.values()], default=3000)
-        total_w = left_w + max_time * time_scale + 300
-        total_h = header_h + max(1, len(model.small_items())) * row_h + 80
+        graph_w = max(1800, int(max_time * time_scale) + 500)
+        total_w = left_w + graph_w
+        total_h = max(900, header_h + max(1, len(model.small_items())) * row_h + 120)
         scene.setSceneRect(0, 0, total_w, total_h)
+
+        # Left/right regions
+        scene.addRect(0, 0, left_w, total_h, QPen(QColor(205, 210, 216)), QBrush(QColor(245, 247, 249)))
+        scene.addRect(left_w, 0, graph_w, total_h, QPen(QColor(210, 214, 220)), QBrush(QColor(255, 255, 255)))
+        scene.addRect(0, 0, total_w, header_h, QPen(QColor(200, 205, 212)), QBrush(QColor(236, 240, 244)))
+        scene.addLine(left_w, 0, left_w, total_h, QPen(QColor(110, 120, 135), 2))
 
         smalls = sorted(
             model.small_items(),
@@ -834,32 +850,46 @@ class TimingChartView(QGraphicsView):
         )
         row_map = {s.uid: i for i, s in enumerate(smalls)}
 
-        scene.addRect(0, 0, total_w, header_h)
-        scene.addLine(left_w, 0, left_w, total_h)
+        # Header labels
+        left_header = scene.addSimpleText("項目")
+        left_header.setPos(14, 18)
+        graph_header = scene.addSimpleText("タイミングチャート")
+        graph_header.setPos(left_w + 14, 18)
 
-        step = 500
+        # Time ruler and grid
+        minor_step = 100
+        major_step = 500
         t = 0
-        while t <= max_time + 1000:
+        while t <= max_time + 1500:
             x = left_w + t * time_scale
-            pen = QPen(QColor(180, 180, 180))
-            pen.setStyle(Qt.DashLine)
-            scene.addLine(x, header_h, x, total_h - 20, pen)
-            txt = scene.addSimpleText(f"{t} ms")
-            txt.setPos(x + 4, 8)
-            t += step
+            if t % major_step == 0:
+                pen = QPen(QColor(186, 191, 198), 1)
+                scene.addLine(x, header_h, x, total_h - 28, pen)
+                txt = scene.addSimpleText(f"{t} ms")
+                txt.setPos(x + 4, 8)
+                tick_h = 18
+            else:
+                pen = QPen(QColor(230, 233, 237), 1)
+                pen.setStyle(Qt.DotLine)
+                scene.addLine(x, header_h, x, total_h - 28, pen)
+                tick_h = 10
+            scene.addLine(x, header_h - tick_h, x, header_h, QPen(QColor(150, 156, 165), 1))
+            t += minor_step
 
+        # Rows / labels
         for s in smalls:
             row = row_map[s.uid]
             top = header_h + row * row_h
-            bg = QGraphicsRectItem(0, top, total_w, row_h)
-            bg.setBrush(QBrush(QColor(248, 249, 251) if row % 2 == 0 else QColor(238, 241, 244)))
-            bg.setPen(QPen(QColor(220, 225, 230)))
-            scene.addItem(bg)
+            left_bg = QColor(250, 251, 252) if row % 2 == 0 else QColor(243, 246, 248)
+            scene.addRect(0, top, left_w, row_h, QPen(QColor(220, 225, 230)), QBrush(left_bg))
+            scene.addRect(left_w, top, graph_w, row_h, QPen(QColor(232, 236, 240)), QBrush(QColor(255, 255, 255)))
+            scene.addLine(0, top + row_h, total_w, top + row_h, QPen(QColor(224, 228, 233), 1))
+
             large = model.get_large_for_small(s.uid)
             middle = model.get_middle_for_small(s.uid)
             label_text = f"{large.id_number if large else '-'}-{middle.id_number if middle else '-'}-{s.id_number}  {model.hierarchy_path(s.uid)}"
             label = scene.addSimpleText(label_text)
-            label.setPos(10, top + 8)
+            label.setPos(12, top + 12)
 
         op_anchor: Dict[int, Dict[str, QPointF]] = {}
 
@@ -879,7 +909,7 @@ class TimingChartView(QGraphicsView):
 
             small_item = model.get_hierarchy(action_def.small_item_uid)
             if small_item and small_item.action_type == "onoff":
-                y_off = top + row_h * 0.68
+                y_off = top + row_h * 0.70
                 y_on = top + row_h * 0.28
                 y1 = y_on if op.from_value == "ON" else y_off
                 y2 = y_on if op.to_value == "ON" else y_off
@@ -887,36 +917,37 @@ class TimingChartView(QGraphicsView):
                 scene.addLine(x1, y1, x2, y2, pen)
                 if y1 != y2:
                     scene.addLine(x1, y1, x1, y2, pen)
-                hit_rect = QRectF(min(x1, x2), min(y1, y2) - 10, max(20, abs(x2 - x1)), abs(y2 - y1) + 20)
+                hit_rect = QRectF(min(x1, x2), min(y1, y2) - 12, max(24, abs(x2 - x1)), abs(y2 - y1) + 24)
             else:
                 points = action_def.points or ["P1", "P2"]
                 index_map = {p: i for i, p in enumerate(points)}
                 n = max(1, len(points) - 1)
                 f_idx = index_map.get(op.from_value, 0)
                 t_idx = index_map.get(op.to_value, f_idx)
-                y1 = top + 14 + (row_h - 28) * (f_idx / max(1, n))
-                y2 = top + 14 + (row_h - 28) * (t_idx / max(1, n))
+                y1 = top + 16 + (row_h - 32) * (f_idx / max(1, n))
+                y2 = top + 16 + (row_h - 32) * (t_idx / max(1, n))
                 pen = QPen(QColor(45, 92, 191), 3)
                 scene.addLine(x1, y1, x2, y2, pen)
-                hit_rect = QRectF(min(x1, x2) - 6, min(y1, y2) - 10, max(20, abs(x2 - x1) + 12), abs(y2 - y1) + 20)
+                hit_rect = QRectF(min(x1, x2) - 8, min(y1, y2) - 12, max(24, abs(x2 - x1) + 16), abs(y2 - y1) + 24)
+
                 for p, i in index_map.items():
-                    py = top + 14 + (row_h - 28) * (i / max(1, n))
-                    scene.addLine(left_w - 6, py, left_w, py, QPen(QColor(140, 140, 140)))
-                    if i < 6:
+                    py = top + 16 + (row_h - 32) * (i / max(1, n))
+                    scene.addLine(left_w - 8, py, left_w, py, QPen(QColor(140, 140, 140)))
+                    if i < 8:
                         label = scene.addSimpleText(p)
-                        label.setPos(left_w - 70, py - 8)
+                        label.setPos(left_w - 90, py - 8)
 
             hit = SelectableOpRect(hit_rect, op.uid, self._on_operation_clicked)
             hit.setBrush(QBrush(QColor(0, 0, 0, 1)))
             hit.setPen(QPen(QColor(0, 0, 0, 0)))
             scene.addItem(hit)
 
-            caption = scene.addSimpleText(f"OP{op.uid}: {op.name}")
-            caption.setPos(x1 + 6, top + 6)
+            caption = scene.addSimpleText(f"OP{op.uid}")
+            caption.setPos(x1 + 6, top + 8)
             op_anchor[op.uid] = {"start": QPointF(x1, y1), "end": QPointF(x2, y2)}
 
         for op in model.operations:
-            if op.start_operation_uid is None and not (op.end_mode == "トリガ指定" and op.end_operation_uid is not None):
+            if op.start_operation_uid is None:
                 continue
             if op.start_operation_uid not in op_anchor or op.uid not in op_anchor:
                 continue
@@ -926,7 +957,6 @@ class TimingChartView(QGraphicsView):
             p2 = op_anchor[op.uid]["start"]
 
             line = scene.addLine(p1.x(), p1.y(), p2.x(), p2.y(), QPen(QColor(180, 70, 50), 2))
-
             angle = line.line().angle()
             arrow_size = 10
             p = p2
@@ -942,554 +972,6 @@ class TimingChartView(QGraphicsView):
             arrow_item.setBrush(QBrush(QColor(180, 70, 50)))
             arrow_item.setPen(QPen(QColor(180, 70, 50)))
             scene.addItem(arrow_item)
-
-
-# =========================
-# Tabs
-# =========================
-
-
-
-
-class ClearSelectionTreeWidget(QTreeWidget):
-    def mousePressEvent(self, event):
-        item = self.itemAt(event.pos())
-        current = self.currentItem()
-        if item is None or item == current:
-            self.clearSelection()
-            self.setCurrentItem(None)
-            event.accept()
-            return
-        super().mousePressEvent(event)
-
-
-class DeviceTab(QWidget):
-    model_about_to_change = Signal(str)
-    model_changed = Signal()
-
-    def __init__(self, model: AppModel, parent=None):
-        super().__init__(parent)
-        self.model = model
-
-        layout = QVBoxLayout(self)
-
-        self.tree = ClearSelectionTreeWidget()
-        self.tree.setColumnCount(3)
-        self.tree.setHeaderLabels(["項目", "動作種別", "ポイント"])
-        self.tree.header().setSectionResizeMode(0, QHeaderView.Interactive)
-        self.tree.header().setSectionResizeMode(1, QHeaderView.Interactive)
-        self.tree.header().setSectionResizeMode(2, QHeaderView.Interactive)
-        self.tree.setColumnWidth(0, 420)
-        self.tree.setColumnWidth(1, 120)
-        self.tree.setColumnWidth(2, 360)
-        self.tree.setAlternatingRowColors(True)
-        layout.addWidget(self.tree)
-
-        note = QLabel("※ 大項目 → 中項目 → 小項目の階層で表示します。ポイントは小項目に紐づいて右側に表示します。")
-        layout.addWidget(note)
-
-        btn_row = QHBoxLayout()
-        self.add_device_btn = QPushButton("機器追加")
-        self.edit_device_btn = QPushButton("機器編集")
-        self.del_device_btn = QPushButton("機器削除")
-        self.add_action_btn = QPushButton("ポイント追加")
-        self.edit_action_btn = QPushButton("ポイント編集")
-        self.del_action_btn = QPushButton("ポイント削除")
-        btn_row.addWidget(self.add_device_btn)
-        btn_row.addWidget(self.edit_device_btn)
-        btn_row.addWidget(self.del_device_btn)
-        btn_row.addSpacing(16)
-        btn_row.addWidget(self.add_action_btn)
-        btn_row.addWidget(self.edit_action_btn)
-        btn_row.addWidget(self.del_action_btn)
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
-
-        self.add_device_btn.clicked.connect(self.add_device)
-        self.edit_device_btn.clicked.connect(self.edit_device)
-        self.del_device_btn.clicked.connect(self.delete_device)
-        self.add_action_btn.clicked.connect(self.add_action)
-        self.edit_action_btn.clicked.connect(self.edit_action)
-        self.del_action_btn.clicked.connect(self.delete_action)
-
-        self.refresh()
-
-    def refresh(self):
-        self.tree.clear()
-        large_items = sorted(self.model.children_of(None, "large"), key=lambda x: (x.id_number, x.uid))
-        for large in large_items:
-            large_item = QTreeWidgetItem([f"{large.id_number} {large.name}", "", ""])
-            large_item.setData(0, Qt.UserRole, ("hierarchy", large.uid))
-            self.tree.addTopLevelItem(large_item)
-
-            middle_items = sorted(self.model.children_of(large.uid, "middle"), key=lambda x: (x.id_number, x.uid))
-            for middle in middle_items:
-                middle_item = QTreeWidgetItem([f"{middle.id_number} {middle.name}", "", ""])
-                middle_item.setData(0, Qt.UserRole, ("hierarchy", middle.uid))
-                large_item.addChild(middle_item)
-
-                small_items = sorted(self.model.children_of(middle.uid, "small"), key=lambda x: (x.id_number, x.uid))
-                for small in small_items:
-                    actions = sorted([a for a in self.model.action_definitions if a.small_item_uid == small.uid], key=lambda x: (x.action_no, x.uid))
-                    action_text = "\n".join([f"{a.action_no} / {a.name}" for a in actions])
-                    small_item = QTreeWidgetItem([f"{small.id_number} {small.name}", small.action_type or "", action_text])
-                    small_item.setData(0, Qt.UserRole, ("hierarchy", small.uid))
-                    middle_item.addChild(small_item)
-
-        self.tree.expandToDepth(2)
-
-    def _current_item_data(self):
-        item = self.tree.currentItem()
-        return item.data(0, Qt.UserRole) if item else None
-
-    def _selected_hierarchy_uid(self) -> Optional[int]:
-        data = self._current_item_data()
-        if not data or data[0] != "hierarchy":
-            return None
-        return data[1]
-
-    def _selected_small_uid(self) -> Optional[int]:
-        uid = self._selected_hierarchy_uid()
-        if uid is None:
-            return None
-        item = self.model.get_hierarchy(uid)
-        return uid if item and item.level == "small" else None
-
-    def _choose_action_for_small(self, small_uid: int) -> Optional[int]:
-        actions = sorted([a for a in self.model.action_definitions if a.small_item_uid == small_uid], key=lambda x: (x.action_no, x.uid))
-        if not actions:
-            QMessageBox.information(self, "ポイントなし", "この小項目にはポイントがありません。")
-            return None
-        if len(actions) == 1:
-            return actions[0].uid
-        labels = [f"{a.action_no} / {a.name}" for a in actions]
-        selected, ok = QInputDialog.getItem(self, "ポイント選択", "対象ポイントを選択してください", labels, 0, False)
-        if not ok:
-            return None
-        return actions[labels.index(selected)].uid
-
-    def add_device(self):
-        dlg = HierarchyItemDialog(self.model, parent=self)
-        if dlg.exec():
-            try:
-                value = dlg.get_value()
-            except ValueError:
-                QMessageBox.warning(self, "入力エラー", "IDは数値で入力してください。")
-                return
-            if not value["name"]:
-                QMessageBox.warning(self, "入力不足", "名称を入力してください。")
-                return
-            if value["level"] != "large" and value["parent_uid"] is None:
-                QMessageBox.warning(self, "入力不足", "親項目を選択してください。")
-                return
-            if value["level"] == "small" and not value["action_type"]:
-                QMessageBox.warning(self, "入力不足", "小項目には動作種別を設定してください。")
-                return
-
-            self.model_about_to_change.emit("機器追加")
-            new_uid = self.model.next_hierarchy_uid()
-            self.model.hierarchy_items.append(HierarchyItem(
-                uid=new_uid,
-                id_number=value["id_number"],
-                name=value["name"],
-                level=value["level"],
-                parent_uid=value["parent_uid"],
-                action_type=value["action_type"],
-            ))
-            if value["level"] == "small" and value["action_type"] == "onoff":
-                self._initialize_onoff_points(new_uid)
-            self.refresh()
-            self.model_changed.emit()
-
-    def edit_device(self):
-        uid = self._selected_hierarchy_uid()
-        if uid is None:
-            QMessageBox.information(self, "選択", "編集する機器項目を選択してください。")
-            return
-        item = self.model.get_hierarchy(uid)
-        if not item:
-            return
-        dlg = HierarchyItemDialog(self.model, item=item, parent=self)
-        if dlg.exec():
-            try:
-                value = dlg.get_value()
-            except ValueError:
-                QMessageBox.warning(self, "入力エラー", "IDは数値で入力してください。")
-                return
-            if not value["name"]:
-                QMessageBox.warning(self, "入力不足", "名称を入力してください。")
-                return
-            if value["level"] != "large" and value["parent_uid"] is None:
-                QMessageBox.warning(self, "入力不足", "親項目を選択してください。")
-                return
-            if value["level"] == "small" and not value["action_type"]:
-                QMessageBox.warning(self, "入力不足", "小項目には動作種別を設定してください。")
-                return
-
-            self.model_about_to_change.emit("機器編集")
-            item.id_number = value["id_number"]
-            item.name = value["name"]
-            item.level = value["level"]
-            item.parent_uid = value["parent_uid"]
-            item.action_type = value["action_type"]
-            if item.level == "small" and item.action_type == "onoff":
-                self._initialize_onoff_points(item.uid)
-            self.refresh()
-            self.model_changed.emit()
-
-    def delete_device(self):
-        uid = self._selected_hierarchy_uid()
-        if uid is None:
-            QMessageBox.information(self, "選択", "削除する機器項目を選択してください。")
-            return
-
-        descendants = set()
-        stack = [uid]
-        while stack:
-            cur = stack.pop()
-            descendants.add(cur)
-            stack.extend([x.uid for x in self.model.children_of(cur)])
-
-        related_action_uids = [a.uid for a in self.model.action_definitions if a.small_item_uid in descendants]
-        self.model_about_to_change.emit("機器削除")
-        self.model.operations = [op for op in self.model.operations if op.action_uid not in related_action_uids]
-        self.model.action_definitions = [a for a in self.model.action_definitions if a.small_item_uid not in descendants]
-        self.model.hierarchy_items = [h for h in self.model.hierarchy_items if h.uid not in descendants]
-        self.refresh()
-        self.model_changed.emit()
-
-
-    def _initialize_onoff_points(self, small_uid: int):
-        actions = sorted(
-            [a for a in self.model.action_definitions if a.small_item_uid == small_uid],
-            key=lambda x: (x.action_no, x.uid)
-        )
-        if not actions:
-            self.model.action_definitions.append(ActionDefinition(
-                uid=self.model.next_action_uid(),
-                small_item_uid=small_uid,
-                action_no=1,
-                name="ON",
-                points=["ON", "OFF"],
-            ))
-            self.model.action_definitions.append(ActionDefinition(
-                uid=self.model.next_action_uid(),
-                small_item_uid=small_uid,
-                action_no=2,
-                name="OFF",
-                points=["ON", "OFF"],
-            ))
-            return
-        first = actions[0]
-        first.action_no = 1
-        first.name = "ON"
-        first.points = ["ON", "OFF"]
-        for idx, a in enumerate(actions[1:], start=2):
-            a.action_no = idx
-            if idx == 2:
-                a.name = "OFF"
-            elif a.name in ("ON", "OFF"):
-                a.name = f"追加{idx-2}"
-            a.points = ["ON", "OFF"]
-
-    def add_action(self):
-        small_uid = self._selected_small_uid()
-        if small_uid is None:
-            QMessageBox.information(self, "選択", "ポイント追加は小項目を選択して実行してください。")
-            return
-        dlg = ActionDefinitionDialog(self.model, fixed_small_uid=small_uid, parent=self)
-        if dlg.exec():
-            try:
-                value = dlg.get_value()
-            except ValueError:
-                QMessageBox.warning(self, "入力エラー", "ポイント番号は数値で入力してください。")
-                return
-            if not value["name"]:
-                QMessageBox.warning(self, "入力不足", "ポイント名を入力してください。")
-                return
-            self.model_about_to_change.emit("ポイント追加")
-            self.model.action_definitions.append(ActionDefinition(
-                uid=self.model.next_action_uid(),
-                small_item_uid=value["small_item_uid"],
-                action_no=value["action_no"],
-                name=value["name"],
-                points=value["points"],
-            ))
-            self.model.normalize_onoff_points()
-            self.refresh()
-            self.model_changed.emit()
-
-    def edit_action(self):
-        small_uid = self._selected_small_uid()
-        if small_uid is None:
-            QMessageBox.information(self, "選択", "ポイント編集は小項目を選択して実行してください。")
-            return
-        action_uid = self._choose_action_for_small(small_uid)
-        if action_uid is None:
-            return
-        action = self.model.get_action_def(action_uid)
-        if not action:
-            return
-        dlg = ActionDefinitionDialog(self.model, action_def=action, fixed_small_uid=small_uid, parent=self)
-        if dlg.exec():
-            try:
-                value = dlg.get_value()
-            except ValueError:
-                QMessageBox.warning(self, "入力エラー", "ポイント番号は数値で入力してください。")
-                return
-            if not value["name"]:
-                QMessageBox.warning(self, "入力不足", "ポイント名を入力してください。")
-                return
-            self.model_about_to_change.emit("ポイント編集")
-            action.small_item_uid = value["small_item_uid"]
-            action.action_no = value["action_no"]
-            action.name = value["name"]
-            action.points = value["points"]
-            self.model.normalize_onoff_points()
-            self.refresh()
-            self.model_changed.emit()
-
-    def delete_action(self):
-        small_uid = self._selected_small_uid()
-        if small_uid is None:
-            QMessageBox.information(self, "選択", "ポイント削除は小項目を選択して実行してください。")
-            return
-        action_uid = self._choose_action_for_small(small_uid)
-        if action_uid is None:
-            return
-        self.model_about_to_change.emit("ポイント削除")
-        self.model.operations = [op for op in self.model.operations if op.action_uid != action_uid]
-        self.model.action_definitions = [a for a in self.model.action_definitions if a.uid != action_uid]
-        self.refresh()
-        self.model_changed.emit()
-
-
-
-
-class NumericTableWidgetItem(QTableWidgetItem):
-    def __lt__(self, other):
-        try:
-            return int(self.text()) < int(other.text())
-        except Exception:
-            return super().__lt__(other)
-
-
-class OperationsTab(QWidget):
-    model_about_to_change = Signal(str)
-    model_changed = Signal()
-
-    def __init__(self, model: AppModel, parent=None):
-        super().__init__(parent)
-        self.model = model
-
-        layout = QVBoxLayout(self)
-        self.table = QTableWidget(0, 13)
-        self.table.setHorizontalHeaderLabels([
-            "No", "動作UID", "大項目", "中項目", "小項目", "開始ポイント", "終了ポイント",
-            "開始トリガ", "開始依存元動作UID", "終了設定", "終了トリガ", "終了依存元動作UID", "時間(ms)"
-        ])
-        for i in range(13):
-            self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.Interactive)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.setSortingEnabled(True)
-        self.table.setAlternatingRowColors(True)
-        layout.addWidget(self.table)
-
-        btn_row = QHBoxLayout()
-        self.add_btn = QPushButton("動作追加")
-        self.edit_btn = QPushButton("動作編集")
-        self.del_btn = QPushButton("動作削除")
-        self.refresh_btn = QPushButton("再表示")
-        btn_row.addWidget(self.add_btn)
-        btn_row.addWidget(self.edit_btn)
-        btn_row.addWidget(self.del_btn)
-        btn_row.addStretch()
-        btn_row.addWidget(self.refresh_btn)
-        layout.addLayout(btn_row)
-
-        self.add_btn.clicked.connect(self.add_operation)
-        self.edit_btn.clicked.connect(self.edit_operation)
-        self.del_btn.clicked.connect(self.delete_operation)
-        self.refresh_btn.clicked.connect(self.refresh)
-        self.table.itemDoubleClicked.connect(lambda _: self.edit_operation())
-
-        self.refresh()
-
-    def refresh(self):
-        current_uid = self._selected_operation_uid()
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(self.model.operations))
-        for r, op in enumerate(self.model.operations):
-            action = self.model.get_action_def(op.action_uid)
-            small = self.model.get_hierarchy(action.small_item_uid) if action else None
-            middle = self.model.get_middle_for_small(action.small_item_uid) if action else None
-            large = self.model.get_large_for_small(action.small_item_uid) if action else None
-            point_options = self.model.point_options_for_small(action.small_item_uid) if action else []
-
-            def point_label(value: str) -> str:
-                if not value:
-                    return ""
-                try:
-                    idx = point_options.index(value) + 1
-                    return f"{idx}:{value}"
-                except ValueError:
-                    return value
-
-            vals = [
-                str(r + 1),
-                str(op.uid),
-                f"{large.id_number} {large.name}" if large else "",
-                f"{middle.id_number} {middle.name}" if middle else "",
-                f"{small.id_number} {small.name}" if small else "",
-                point_label(op.from_value),
-                point_label(op.to_value),
-                op.start_trigger,
-                "-" if op.start_operation_uid is None else str(op.start_operation_uid),
-                op.end_mode,
-                op.end_trigger if op.end_mode == "トリガ指定" else "-",
-                "-" if op.end_operation_uid is None else str(op.end_operation_uid),
-                str(op.duration_ms),
-            ]
-            for c, v in enumerate(vals):
-                numeric_cols = {0, 1, 8, 11, 12}
-                item = NumericTableWidgetItem(v) if c in numeric_cols and v not in ("", "-") else QTableWidgetItem(v)
-                item.setData(Qt.UserRole, op.uid)
-                self.table.setItem(r, c, item)
-
-        self.table.setSortingEnabled(True)
-        if current_uid is not None:
-            self._select_operation_uid(current_uid)
-
-    def _select_operation_uid(self, op_uid: int):
-        for r in range(self.table.rowCount()):
-            item = self.table.item(r, 1)
-            if item and item.data(Qt.UserRole) == op_uid:
-                self.table.selectRow(r)
-                break
-
-    def _selected_operation_uid(self) -> Optional[int]:
-        row = self.table.currentRow()
-        if row < 0:
-            return None
-        item = self.table.item(row, 1)
-        return item.data(Qt.UserRole) if item else None
-
-    def _uid_exists(self, uid: int, exclude_uid: Optional[int] = None) -> bool:
-        return any(op.uid == uid and op.uid != exclude_uid for op in self.model.operations)
-
-    def _unused_operation_uid(self) -> int:
-        used = {op.uid for op in self.model.operations}
-        uid = 1
-        while uid in used:
-            uid += 1
-        return uid
-
-    def add_operation(self):
-        if not self.model.small_items():
-            QMessageBox.warning(self, "項目不足", "先に機器一覧で小項目とポイントを設定してください。")
-            return
-
-        selected_uid = self._selected_operation_uid()
-        dlg = OperationDialog(self.model, parent=self, default_uid=self._unused_operation_uid())
-        if dlg.exec():
-            try:
-                value = dlg.get_value()
-            except ValueError:
-                QMessageBox.warning(self, "入力エラー", "動作UID / 依存元UID / 時間(ms) は数値で入力してください。")
-                return
-            if value["action_uid"] is None:
-                QMessageBox.warning(self, "入力不足", "対象小項目にポイントが必要です。")
-                return
-            if self._uid_exists(value["uid"]):
-                QMessageBox.warning(self, "UID重複", f"動作UID {value['uid']} はすでに存在します。")
-                return
-
-            self.model_about_to_change.emit("動作追加")
-            new_op = OperationInstance(
-                uid=value["uid"],
-                action_uid=value["action_uid"],
-                operation_mode=value["operation_mode"],
-                time_mode=value["time_mode"],
-                duration_ms=value["duration_ms"],
-                start_trigger=value["start_trigger"],
-                start_operation_uid=value["start_operation_uid"],
-                end_mode=value["end_mode"],
-                end_trigger=value["end_trigger"],
-                end_operation_uid=value["end_operation_uid"],
-                from_value=value["from_value"],
-                to_value=value["to_value"],
-            )
-
-            if selected_uid is None:
-                self.model.operations.append(new_op)
-            else:
-                insert_idx = next((i for i, op in enumerate(self.model.operations) if op.uid == selected_uid), len(self.model.operations))
-                self.model.operations.insert(insert_idx + 1, new_op)
-
-            self.refresh()
-            self.model_changed.emit()
-
-    def edit_operation(self):
-        op_uid = self._selected_operation_uid()
-        if op_uid is None:
-            return
-        op = self.model.get_operation(op_uid)
-        if not op:
-            return
-        dlg = OperationDialog(self.model, operation=op, parent=self)
-        if dlg.exec():
-            try:
-                value = dlg.get_value()
-            except ValueError:
-                QMessageBox.warning(self, "入力エラー", "動作UID / 依存元UID / 時間(ms) は数値で入力してください。")
-                return
-            if self._uid_exists(value["uid"], exclude_uid=op.uid):
-                QMessageBox.warning(self, "UID重複", f"動作UID {value['uid']} はすでに存在します。")
-                return
-
-            self.model_about_to_change.emit("動作編集")
-            old_uid = op.uid
-            op.uid = value["uid"]
-            op.action_uid = value["action_uid"]
-            op.operation_mode = value["operation_mode"]
-            op.time_mode = value["time_mode"]
-            op.duration_ms = value["duration_ms"]
-            op.start_trigger = value["start_trigger"]
-            op.start_operation_uid = value["start_operation_uid"]
-            op.end_mode = value["end_mode"]
-            op.end_trigger = value["end_trigger"]
-            op.end_operation_uid = value["end_operation_uid"]
-            op.from_value = value["from_value"]
-            op.to_value = value["to_value"]
-
-            for other in self.model.operations:
-                if other is op:
-                    continue
-                if other.start_operation_uid == old_uid:
-                    other.start_operation_uid = op.uid
-                if other.end_operation_uid == old_uid:
-                    other.end_operation_uid = op.uid
-
-            self.refresh()
-            self.model_changed.emit()
-
-    def delete_operation(self):
-        op_uid = self._selected_operation_uid()
-        if op_uid is None:
-            return
-        self.model_about_to_change.emit("動作削除")
-        for op in self.model.operations:
-            if op.start_operation_uid == op_uid:
-                op.start_operation_uid = None
-                op.start_trigger = "時刻0"
-            if op.end_operation_uid == op_uid:
-                op.end_operation_uid = None
-                op.end_mode = "直値指定"
-        self.model.operations = [op for op in self.model.operations if op.uid != op_uid]
-        self.refresh()
-        self.model_changed.emit()
 
 
 class ChartTab(QWidget):
@@ -1514,7 +996,8 @@ class ChartTab(QWidget):
         layout.addLayout(top_row)
 
         self.chart = TimingChartView()
-        layout.addWidget(self.chart)
+        self.chart.setMinimumHeight(820)
+        layout.addWidget(self.chart, 1)
 
         self.link_toggle.toggled.connect(self.on_link_mode_toggled)
         self.redraw_btn.clicked.connect(self.refresh)
