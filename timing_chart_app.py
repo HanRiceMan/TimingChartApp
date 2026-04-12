@@ -42,7 +42,6 @@ from PySide6.QtWidgets import (
     QStyledItemDelegate,
 )
 
-
 # =========================
 # Data model
 # =========================
@@ -52,7 +51,7 @@ class HierarchyItem:
     uid: int
     id_number: int
     name: str
-    level: str   # large / middle / small
+    level: str
     parent_uid: Optional[int] = None
     action_type: str = ""
 
@@ -89,7 +88,6 @@ class AppModel:
         self.action_definitions: List[ActionDefinition] = []
         self.operations: List[OperationInstance] = []
 
-    # ---------- internal unique IDs ----------
     def next_hierarchy_uid(self) -> int:
         return max([x.uid for x in self.hierarchy_items], default=0) + 1
 
@@ -99,19 +97,14 @@ class AppModel:
     def next_operation_uid(self) -> int:
         return max([x.uid for x in self.operations], default=0) + 1
 
-    # ---------- local display IDs ----------
     def next_local_id(self, level: str, parent_uid: Optional[int]) -> int:
-        nums = [
-            x.id_number for x in self.hierarchy_items
-            if x.level == level and x.parent_uid == parent_uid
-        ]
+        nums = [x.id_number for x in self.hierarchy_items if x.level == level and x.parent_uid == parent_uid]
         return max(nums, default=0) + 1
 
     def next_action_no(self, small_item_uid: int) -> int:
         nums = [x.action_no for x in self.action_definitions if x.small_item_uid == small_item_uid]
         return max(nums, default=0) + 1
 
-    # ---------- lookups ----------
     def get_hierarchy(self, uid: int) -> Optional[HierarchyItem]:
         return next((x for x in self.hierarchy_items if x.uid == uid), None)
 
@@ -151,19 +144,6 @@ class AppModel:
         small = self.get_hierarchy(small_uid)
         return self.get_hierarchy(small.parent_uid) if small and small.parent_uid is not None else None
 
-    def action_label(self, action_uid: int) -> str:
-        a = self.get_action_def(action_uid)
-        if not a:
-            return f"(missing:{action_uid})"
-        small = self.get_hierarchy(a.small_item_uid)
-        middle = self.get_middle_for_small(a.small_item_uid)
-        large = self.get_large_for_small(a.small_item_uid)
-        large_part = f"{large.id_number}:{large.name}" if large else "-"
-        middle_part = f"{middle.id_number}:{middle.name}" if middle else "-"
-        small_part = f"{small.id_number}:{small.name}" if small else "-"
-        small_type = small.action_type if small else ""
-        return f"{large_part} / {middle_part} / {small_part} / {small_type} / 動作{a.action_no}:{a.name}"
-
     def point_options_for_small(self, small_uid: int) -> List[str]:
         small = self.get_hierarchy(small_uid)
         if not small:
@@ -177,30 +157,14 @@ class AppModel:
                     values.append(p)
         return values
 
-
     def normalize_onoff_points(self):
         for small in self.small_items():
             if small.action_type != "onoff":
                 continue
-            actions = sorted(
-                [a for a in self.action_definitions if a.small_item_uid == small.uid],
-                key=lambda x: (x.action_no, x.uid)
-            )
+            actions = sorted([a for a in self.action_definitions if a.small_item_uid == small.uid], key=lambda x: (x.action_no, x.uid))
             if not actions:
-                self.action_definitions.append(ActionDefinition(
-                    uid=self.next_action_uid(),
-                    small_item_uid=small.uid,
-                    action_no=1,
-                    name="ON",
-                    points=["ON", "OFF"],
-                ))
-                self.action_definitions.append(ActionDefinition(
-                    uid=self.next_action_uid(),
-                    small_item_uid=small.uid,
-                    action_no=2,
-                    name="OFF",
-                    points=["ON", "OFF"],
-                ))
+                self.action_definitions.append(ActionDefinition(uid=self.next_action_uid(), small_item_uid=small.uid, action_no=1, name="ON", points=["ON", "OFF"]))
+                self.action_definitions.append(ActionDefinition(uid=self.next_action_uid(), small_item_uid=small.uid, action_no=2, name="OFF", points=["ON", "OFF"]))
                 continue
             first = actions[0]
             first.action_no = 1
@@ -214,8 +178,6 @@ class AppModel:
                     a.name = f"追加{idx-2}"
                 a.points = ["ON", "OFF"]
 
-
-    # ---------- persistence ----------
     def to_dict(self) -> Dict:
         return {
             "hierarchy_items": [asdict(x) for x in self.hierarchy_items],
@@ -225,119 +187,13 @@ class AppModel:
         }
 
     def from_dict(self, data: Dict):
-        # schema v2
-        if data.get("schema_version") == 2 or (data.get("hierarchy_items") and "uid" in data["hierarchy_items"][0]):
-            self.hierarchy_items = [HierarchyItem(**x) for x in data.get("hierarchy_items", [])]
-            self.action_definitions = [ActionDefinition(**x) for x in data.get("action_definitions", [])]
-            self.operations = [OperationInstance(**x) for x in data.get("operations", [])]
-            self.normalize_onoff_points()
-            return
-
-        # backward compatibility for old schema
-        old_hierarchy = data.get("hierarchy_items", [])
-        old_actions = data.get("action_definitions", [])
-        old_ops = data.get("operations", [])
-
-        hierarchy_id_map: Dict[int, int] = {}
-        by_old_id = {x["id"]: x for x in old_hierarchy}
-
-        # recreate large
-        for old in [x for x in old_hierarchy if x["level"] == "large"]:
-            uid = self.next_hierarchy_uid()
-            hierarchy_id_map[old["id"]] = uid
-            self.hierarchy_items.append(HierarchyItem(
-                uid=uid,
-                id_number=self.next_local_id("large", None),
-                name=old["name"],
-                level="large",
-                parent_uid=None,
-            ))
-
-        # recreate middle
-        for old in [x for x in old_hierarchy if x["level"] == "middle"]:
-            old_parent = old.get("parent_id")
-            parent_uid = hierarchy_id_map.get(old_parent)
-            uid = self.next_hierarchy_uid()
-            hierarchy_id_map[old["id"]] = uid
-            self.hierarchy_items.append(HierarchyItem(
-                uid=uid,
-                id_number=self.next_local_id("middle", parent_uid),
-                name=old["name"],
-                level="middle",
-                parent_uid=parent_uid,
-            ))
-
-        # recreate small
-        for old in [x for x in old_hierarchy if x["level"] == "small"]:
-            old_parent = old.get("parent_id")
-            parent_uid = hierarchy_id_map.get(old_parent)
-            uid = self.next_hierarchy_uid()
-            hierarchy_id_map[old["id"]] = uid
-            self.hierarchy_items.append(HierarchyItem(
-                uid=uid,
-                id_number=self.next_local_id("small", parent_uid),
-                name=old["name"],
-                level="small",
-                parent_uid=parent_uid,
-            ))
-
-        action_id_map: Dict[int, int] = {}
-        for old in old_actions:
-            uid = self.next_action_uid()
-            action_id_map[old["id"]] = uid
-            small_uid = hierarchy_id_map.get(old["small_item_id"])
-            small_item = self.get_hierarchy(small_uid)
-            if small_item and not small_item.action_type:
-                small_item.action_type = old.get("action_type", "onoff")
-            self.action_definitions.append(ActionDefinition(
-                uid=uid,
-                small_item_uid=small_uid,
-                action_no=self.next_action_no(small_uid),
-                name=old["name"],
-                points=old.get("points", []),
-            ))
-
-        for old in old_ops:
-            uid = self.next_operation_uid()
-            start_trigger = old.get("start_trigger", "manual")
-            if start_trigger == "manual":
-                start_trigger_new = "時刻0"
-            elif start_trigger == "after_start":
-                start_trigger_new = "開始"
-            else:
-                start_trigger_new = "終了"
-            self.operations.append(OperationInstance(
-                uid=uid,
-                action_uid=action_id_map.get(old["action_def_id"]),
-                name=old.get("name", ""),
-                duration_ms=old.get("duration_ms", 0),
-                operation_mode="ポイント移動",
-                time_mode="直値指定",
-                start_trigger=start_trigger_new,
-                start_operation_uid=None,  # set later
-                end_mode="直値指定",
-                end_trigger="終了",
-                end_operation_uid=None,
-                from_value=old.get("from_value", ""),
-                to_value=old.get("to_value", ""),
-            ))
-
-        old_to_new_op: Dict[int, int] = {}
-        for old, new in zip(old_ops, self.operations):
-            old_to_new_op[old["id"]] = new.uid
-        for old, new in zip(old_ops, self.operations):
-            trig = old.get("trigger_operation_id")
-            new.start_operation_uid = old_to_new_op.get(trig) if trig is not None else None
-
+        self.hierarchy_items = [HierarchyItem(**x) for x in data.get("hierarchy_items", [])]
+        self.action_definitions = [ActionDefinition(**x) for x in data.get("action_definitions", [])]
+        self.operations = [OperationInstance(**x) for x in data.get("operations", [])]
         self.normalize_onoff_points()
 
     def clone_data(self) -> Dict:
         return copy.deepcopy(self.to_dict())
-
-
-# =========================
-# Dialogs
-# =========================
 
 
 class HierarchyItemDialog(QDialog):
@@ -361,7 +217,6 @@ class HierarchyItemDialog(QDialog):
         form.addRow("ID", self.id_edit)
         form.addRow("名称", self.name_edit)
         form.addRow("動作種別(小項目のみ)", self.action_type_combo)
-
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -369,7 +224,6 @@ class HierarchyItemDialog(QDialog):
 
         self.level_combo.currentTextChanged.connect(self._reload_parents)
         self.level_combo.currentTextChanged.connect(self._on_level_changed)
-
         self._reload_parents()
         self._on_level_changed()
 
@@ -445,7 +299,6 @@ class ActionDefinitionDialog(QDialog):
         form.addRow("ポイント", self.name_edit)
         form.addRow("ポイント一覧", self.points_edit)
         form.addRow("", self.points_hint)
-
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -474,7 +327,6 @@ class ActionDefinitionDialog(QDialog):
     def _reload_points_hint(self):
         small_uid = self.small_combo.currentData()
         small = self.model.get_hierarchy(int(small_uid)) if small_uid is not None else None
-        is_points = bool(small and small.action_type == "points")
         self.points_edit.setEnabled(True)
         self.points_hint.setEnabled(True)
         if small and small.action_type == "onoff":
@@ -497,8 +349,6 @@ class ActionDefinitionDialog(QDialog):
             "name": self.name_edit.text().strip(),
             "points": points,
         }
-
-
 
 
 class OperationDialog(QDialog):
@@ -545,7 +395,6 @@ class OperationDialog(QDialog):
         form.addRow("終了トリガ", self.end_trigger_combo)
         form.addRow("終了依存元動作UID", self.end_dep_combo)
         form.addRow("時間(ms)", self.duration_edit)
-
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -678,11 +527,6 @@ class OperationDialog(QDialog):
         }
 
 
-# =========================
-# Schedule calculation
-# =========================
-
-
 def calculate_schedule(model: AppModel) -> Tuple[Dict[int, Tuple[int, int]], List[str]]:
     ops = {op.uid: op for op in model.operations}
     errors = []
@@ -753,13 +597,8 @@ def calculate_schedule(model: AppModel) -> Tuple[Dict[int, Tuple[int, int]], Lis
 
     for op_uid in ops:
         calc(op_uid)
-
     return memo, errors
 
-
-# =========================
-# Chart view
-# =========================
 
 class SelectableOpRect(QGraphicsRectItem):
     def __init__(self, rect: QRectF, operation_uid: int, callback):
@@ -774,6 +613,28 @@ class SelectableOpRect(QGraphicsRectItem):
             self.callback(self.operation_uid)
 
 
+class PointColumnWidget(QWidget):
+    def __init__(self, points: List[str], row_h: int, parent=None):
+        super().__init__(parent)
+        self.points = points
+        self.row_h = row_h
+        self.setMinimumHeight(row_h)
+        self.setMaximumHeight(row_h)
+
+    def point_y_local(self, index: int) -> float:
+        if not self.points:
+            return self.row_h / 2
+        n = max(1, len(self.points) - 1)
+        return 18 + (self.row_h - 36) * (index / n)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        pen = QPen(QColor(60, 60, 60))
+        painter.setPen(pen)
+        for i, p in enumerate(self.points):
+            y = self.point_y_local(i)
+            painter.drawText(8, int(y + 5), f"{i+1}:{p}")
 
 
 class TimingChartView(QGraphicsView):
@@ -850,6 +711,7 @@ class TimingChartView(QGraphicsView):
         cfg = self.left_layout()
         smalls = self.ordered_smalls(model)
         row_h = cfg["row_h"]
+
         table.clearContents()
         table.setRowCount(len(smalls))
         table.setColumnCount(4)
@@ -860,18 +722,18 @@ class TimingChartView(QGraphicsView):
         table.setColumnWidth(3, cfg["col_points"])
         table.clearSpans()
         table.setWordWrap(True)
+
         for r, s in enumerate(smalls):
             table.setRowHeight(r, row_h)
             large = model.get_large_for_small(s.uid)
             middle = model.get_middle_for_small(s.uid)
             points = model.point_options_for_small(s.uid)
-            items = [
-                QTableWidgetItem(f"{large.id_number} {large.name}" if large else ""),
-                QTableWidgetItem(f"{middle.id_number} {middle.name}" if middle else ""),
-                QTableWidgetItem(f"{s.id_number} {s.name}"),
-                QTableWidgetItem("\n".join([f"{i+1}:{p}" for i, p in enumerate(points)])),
-            ]
-            for c, item in enumerate(items):
+
+            item_large = QTableWidgetItem(f"{large.id_number} {large.name}" if large else "")
+            item_middle = QTableWidgetItem(f"{middle.id_number} {middle.name}" if middle else "")
+            item_small = QTableWidgetItem(f"{s.id_number} {s.name}")
+
+            for c, item in enumerate([item_large, item_middle, item_small]):
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 item.setTextAlignment(Qt.AlignLeft | Qt.AlignTop)
                 if c < 2:
@@ -881,12 +743,24 @@ class TimingChartView(QGraphicsView):
                     item.setBackground(QBrush(bg))
                 table.setItem(r, c, item)
 
-        # merge large/middle repeated cells
+            point_widget = PointColumnWidget(points, row_h)
+            point_widget.setAutoFillBackground(True)
+            point_widget.setStyleSheet(
+                "background-color: rgb(250, 251, 252);" if r % 2 == 0
+                else "background-color: rgb(243, 246, 248);"
+            )
+            table.setCellWidget(r, 3, point_widget)
+
         r = 0
         while r < len(smalls):
             large = model.get_large_for_small(smalls[r].uid)
             span = 1
-            while r + span < len(smalls) and model.get_large_for_small(smalls[r + span].uid) and large and model.get_large_for_small(smalls[r + span].uid).uid == large.uid:
+            while (
+                r + span < len(smalls)
+                and model.get_large_for_small(smalls[r + span].uid)
+                and large
+                and model.get_large_for_small(smalls[r + span].uid).uid == large.uid
+            ):
                 span += 1
             if span > 1:
                 table.setSpan(r, 0, span, 1)
@@ -896,7 +770,12 @@ class TimingChartView(QGraphicsView):
         while r < len(smalls):
             middle = model.get_middle_for_small(smalls[r].uid)
             span = 1
-            while r + span < len(smalls) and model.get_middle_for_small(smalls[r + span].uid) and middle and model.get_middle_for_small(smalls[r + span].uid).uid == middle.uid:
+            while (
+                r + span < len(smalls)
+                and model.get_middle_for_small(smalls[r + span].uid)
+                and middle
+                and model.get_middle_for_small(smalls[r + span].uid).uid == middle.uid
+            ):
                 span += 1
             if span > 1:
                 table.setSpan(r, 1, span, 1)
@@ -965,20 +844,19 @@ class TimingChartView(QGraphicsView):
             except ValueError:
                 idx = 0
             return point_y_local(top, values, idx)
+
         max_time = max([end for _, end in schedule.values()], default=3000)
         graph_w = max(1800, int(max_time * time_scale) + 700)
         body_h = max(720, max(1, len(smalls)) * row_h + 20)
         scene.setSceneRect(0, 0, graph_w, body_h)
         self._layout_info = {"graph_w": graph_w, "body_h": body_h}
 
-        # row backgrounds
-        for r, s in enumerate(smalls):
+        for r, _s in enumerate(smalls):
             top = r * row_h
             graph_bg = QColor(252, 253, 254) if r % 2 == 0 else QColor(248, 250, 252)
             scene.addRect(0, top, graph_w, row_h, QPen(QColor(232, 236, 240)), QBrush(graph_bg))
             scene.addLine(0, top + row_h, graph_w, top + row_h, QPen(QColor(224, 228, 233), 1))
 
-        # time grid
         minor_step = 100
         major_step = 500
         t = 0
@@ -1003,8 +881,12 @@ class TimingChartView(QGraphicsView):
             idx = index_map.get(value, 0)
             return top + 18 + (row_h - 36) * (idx / max(1, n))
 
-        palette = [QColor(45, 92, 191), QColor(28, 124, 84), QColor(180, 90, 40), QColor(120, 70, 170), QColor(160, 60, 120), QColor(60, 140, 150)]
+        palette = [
+            QColor(45, 92, 191), QColor(28, 124, 84), QColor(180, 90, 40),
+            QColor(120, 70, 170), QColor(160, 60, 120), QColor(60, 140, 150)
+        ]
         ordered_small_ids = [x.uid for x in smalls]
+
         def color_for_small(small_uid: int) -> QColor:
             idx = ordered_small_ids.index(small_uid) if small_uid in ordered_small_ids else 0
             return palette[idx % len(palette)]
@@ -1059,7 +941,12 @@ class TimingChartView(QGraphicsView):
                     anchor_start_y = y_from
                     anchor_end_y = y_to
 
-                hit_rect = QRectF(min(x1, x2) - 8, min(current_y, y_from, y_to) - 12, max(24, abs(x2 - x1) + 16), max(current_y, y_from, y_to) - min(current_y, y_from, y_to) + 24)
+                hit_rect = QRectF(
+                    min(x1, x2) - 8,
+                    min(current_y, y_from, y_to) - 12,
+                    max(24, abs(x2 - x1) + 16),
+                    max(current_y, y_from, y_to) - min(current_y, y_from, y_to) + 24,
+                )
                 hit = SelectableOpRect(hit_rect, op.uid, self._on_operation_clicked)
                 hit.setBrush(QBrush(QColor(0, 0, 0, 1)))
                 hit.setPen(QPen(QColor(0, 0, 0, 0)))
@@ -1076,7 +963,6 @@ class TimingChartView(QGraphicsView):
             if tail_x2 > tail_x1:
                 scene.addLine(tail_x1, current_y, tail_x2, current_y, QPen(item_color, 3))
 
-# dependency arrows as manually dashed black connector lines
         import math
 
         def draw_manual_dashed_line(
@@ -1090,16 +976,11 @@ class TimingChartView(QGraphicsView):
             length = (dx * dx + dy * dy) ** 0.5
             if length <= 0.001:
                 return
-
             ux = dx / length
             uy = dy / length
-
             pen = QPen(color, width)
             pen.setCapStyle(Qt.FlatCap)
-
             pos = 0.0
-
-            # 始点だけ少し実線にして、ちゃんと始点から出ているように見せる
             if start_with_solid > 0.0:
                 solid_end = min(start_with_solid, length)
                 sx = x1
@@ -1108,7 +989,6 @@ class TimingChartView(QGraphicsView):
                 ey = y1 + uy * solid_end
                 scene.addLine(sx, sy, ex, ey, pen)
                 pos = solid_end
-
             while pos < length:
                 seg_start = pos
                 seg_end = min(pos + dash_len, length)
@@ -1131,55 +1011,28 @@ class TimingChartView(QGraphicsView):
 
             color = QColor(20, 20, 20)
             arrow_size = 10
-
             dx = p2.x() - p1.x()
             dy = p2.y() - p1.y()
             length = (dx * dx + dy * dy) ** 0.5
             if length <= 0.001:
                 continue
-
             ux = dx / length
             uy = dy / length
+            line_end = QPointF(p2.x() - ux * arrow_size, p2.y() - uy * arrow_size)
 
-            # 矢印の先端ぶん手前で線を止める
-            line_end = QPointF(
-                p2.x() - ux * arrow_size,
-                p2.y() - uy * arrow_size,
-            )
-
-            # 始点マーカー
-            scene.addEllipse(
-                p1.x() - 2.5, p1.y() - 2.5, 5, 5,
-                QPen(color), QBrush(color)
-            )
-
-            # 直線の破線
+            scene.addEllipse(p1.x() - 2.5, p1.y() - 2.5, 5, 5, QPen(color), QBrush(color))
             draw_manual_dashed_line(
-                p1.x(), p1.y(),
-                line_end.x(), line_end.y(),
-                color,
-                width=2,
-                dash_len=8.0,
-                gap_len=5.0,
-                start_with_solid=10.0,
+                p1.x(), p1.y(), line_end.x(), line_end.y(),
+                color, width=2, dash_len=8.0, gap_len=5.0, start_with_solid=10.0
             )
 
-            # 矢印（三角形）を線の向きに合わせて回転
             px = -uy
             py = ux
-
             arrow = QPolygonF([
                 p2,
-                QPointF(
-                    line_end.x() + px * (arrow_size * 0.45),
-                    line_end.y() + py * (arrow_size * 0.45),
-                ),
-                QPointF(
-                    line_end.x() - px * (arrow_size * 0.45),
-                    line_end.y() - py * (arrow_size * 0.45),
-                ),
+                QPointF(line_end.x() + px * (arrow_size * 0.45), line_end.y() + py * (arrow_size * 0.45)),
+                QPointF(line_end.x() - px * (arrow_size * 0.45), line_end.y() - py * (arrow_size * 0.45)),
             ])
-
             arrow_item = QGraphicsPolygonItem(arrow)
             arrow_item.setBrush(QBrush(color))
             arrow_item.setPen(QPen(color))
@@ -1205,7 +1058,6 @@ class DeviceTab(QWidget):
     def __init__(self, model: AppModel, parent=None):
         super().__init__(parent)
         self.model = model
-
         layout = QVBoxLayout(self)
 
         self.tree = ClearSelectionTreeWidget()
@@ -1270,7 +1122,6 @@ class DeviceTab(QWidget):
                     small_item = QTreeWidgetItem([f"{small.id_number} {small.name}", small.action_type or "", action_text])
                     small_item.setData(0, Qt.UserRole, ("hierarchy", small.uid))
                     middle_item.addChild(small_item)
-
         self.tree.expandToDepth(2)
 
     def _current_item_data(self):
@@ -1306,11 +1157,7 @@ class DeviceTab(QWidget):
     def add_device(self):
         dlg = HierarchyItemDialog(self.model, parent=self)
         if dlg.exec():
-            try:
-                value = dlg.get_value()
-            except ValueError:
-                QMessageBox.warning(self, "入力エラー", "IDは数値で入力してください。")
-                return
+            value = dlg.get_value()
             if not value["name"]:
                 QMessageBox.warning(self, "入力不足", "名称を入力してください。")
                 return
@@ -1320,16 +1167,11 @@ class DeviceTab(QWidget):
             if value["level"] == "small" and not value["action_type"]:
                 QMessageBox.warning(self, "入力不足", "小項目には動作種別を設定してください。")
                 return
-
             self.model_about_to_change.emit("機器追加")
             new_uid = self.model.next_hierarchy_uid()
             self.model.hierarchy_items.append(HierarchyItem(
-                uid=new_uid,
-                id_number=value["id_number"],
-                name=value["name"],
-                level=value["level"],
-                parent_uid=value["parent_uid"],
-                action_type=value["action_type"],
+                uid=new_uid, id_number=value["id_number"], name=value["name"],
+                level=value["level"], parent_uid=value["parent_uid"], action_type=value["action_type"]
             ))
             if value["level"] == "small" and value["action_type"] == "onoff":
                 self._initialize_onoff_points(new_uid)
@@ -1346,11 +1188,7 @@ class DeviceTab(QWidget):
             return
         dlg = HierarchyItemDialog(self.model, item=item, parent=self)
         if dlg.exec():
-            try:
-                value = dlg.get_value()
-            except ValueError:
-                QMessageBox.warning(self, "入力エラー", "IDは数値で入力してください。")
-                return
+            value = dlg.get_value()
             if not value["name"]:
                 QMessageBox.warning(self, "入力不足", "名称を入力してください。")
                 return
@@ -1360,7 +1198,6 @@ class DeviceTab(QWidget):
             if value["level"] == "small" and not value["action_type"]:
                 QMessageBox.warning(self, "入力不足", "小項目には動作種別を設定してください。")
                 return
-
             self.model_about_to_change.emit("機器編集")
             item.id_number = value["id_number"]
             item.name = value["name"]
@@ -1377,14 +1214,12 @@ class DeviceTab(QWidget):
         if uid is None:
             QMessageBox.information(self, "選択", "削除する機器項目を選択してください。")
             return
-
         descendants = set()
         stack = [uid]
         while stack:
             cur = stack.pop()
             descendants.add(cur)
             stack.extend([x.uid for x in self.model.children_of(cur)])
-
         related_action_uids = [a.uid for a in self.model.action_definitions if a.small_item_uid in descendants]
         self.model_about_to_change.emit("機器削除")
         self.model.operations = [op for op in self.model.operations if op.action_uid not in related_action_uids]
@@ -1393,27 +1228,11 @@ class DeviceTab(QWidget):
         self.refresh()
         self.model_changed.emit()
 
-
     def _initialize_onoff_points(self, small_uid: int):
-        actions = sorted(
-            [a for a in self.model.action_definitions if a.small_item_uid == small_uid],
-            key=lambda x: (x.action_no, x.uid)
-        )
+        actions = sorted([a for a in self.model.action_definitions if a.small_item_uid == small_uid], key=lambda x: (x.action_no, x.uid))
         if not actions:
-            self.model.action_definitions.append(ActionDefinition(
-                uid=self.model.next_action_uid(),
-                small_item_uid=small_uid,
-                action_no=1,
-                name="ON",
-                points=["ON", "OFF"],
-            ))
-            self.model.action_definitions.append(ActionDefinition(
-                uid=self.model.next_action_uid(),
-                small_item_uid=small_uid,
-                action_no=2,
-                name="OFF",
-                points=["ON", "OFF"],
-            ))
+            self.model.action_definitions.append(ActionDefinition(uid=self.model.next_action_uid(), small_item_uid=small_uid, action_no=1, name="ON", points=["ON", "OFF"]))
+            self.model.action_definitions.append(ActionDefinition(uid=self.model.next_action_uid(), small_item_uid=small_uid, action_no=2, name="OFF", points=["ON", "OFF"]))
             return
         first = actions[0]
         first.action_no = 1
@@ -1434,11 +1253,7 @@ class DeviceTab(QWidget):
             return
         dlg = ActionDefinitionDialog(self.model, fixed_small_uid=small_uid, parent=self)
         if dlg.exec():
-            try:
-                value = dlg.get_value()
-            except ValueError:
-                QMessageBox.warning(self, "入力エラー", "ポイント番号は数値で入力してください。")
-                return
+            value = dlg.get_value()
             if not value["name"]:
                 QMessageBox.warning(self, "入力不足", "ポイント名を入力してください。")
                 return
@@ -1467,11 +1282,7 @@ class DeviceTab(QWidget):
             return
         dlg = ActionDefinitionDialog(self.model, action_def=action, fixed_small_uid=small_uid, parent=self)
         if dlg.exec():
-            try:
-                value = dlg.get_value()
-            except ValueError:
-                QMessageBox.warning(self, "入力エラー", "ポイント番号は数値で入力してください。")
-                return
+            value = dlg.get_value()
             if not value["name"]:
                 QMessageBox.warning(self, "入力不足", "ポイント名を入力してください。")
                 return
@@ -1499,8 +1310,6 @@ class DeviceTab(QWidget):
         self.model_changed.emit()
 
 
-
-
 class NumericTableWidgetItem(QTableWidgetItem):
     def __lt__(self, other):
         try:
@@ -1516,7 +1325,6 @@ class OperationsTab(QWidget):
     def __init__(self, model: AppModel, parent=None):
         super().__init__(parent)
         self.model = model
-
         layout = QVBoxLayout(self)
 
         self.group_table = QTableWidget(1, 13)
@@ -1540,7 +1348,8 @@ class OperationsTab(QWidget):
 
         self.table = QTableWidget(0, 13)
         self.table.setHorizontalHeaderLabels([
-            "No", "動作UID", "大項目", "中項目", "小項目", "開始ポイント", "開始トリガ", "開始依存元UID", "終了ポイント", "終了設定", "終了トリガ", "終了依存元UID", "時間(ms)"
+            "No", "動作UID", "大項目", "中項目", "小項目", "開始ポイント", "開始トリガ", "開始依存元UID",
+            "終了ポイント", "終了設定", "終了トリガ", "終了依存元UID", "時間(ms)"
         ])
         for i in range(13):
             self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.Interactive)
@@ -1599,8 +1408,7 @@ class OperationsTab(QWidget):
                     return value
 
             vals = [
-                str(r + 1),
-                str(op.uid),
+                str(r + 1), str(op.uid),
                 f"{large.id_number} {large.name}" if large else "",
                 f"{middle.id_number} {middle.name}" if middle else "",
                 f"{small.id_number} {small.name}" if small else "",
@@ -1614,7 +1422,7 @@ class OperationsTab(QWidget):
                 str(op.duration_ms),
             ]
             for c, v in enumerate(vals):
-                item = NumericTableWidgetItem(v) if c in {0,1,7,11,12} and v not in ('', '-') else QTableWidgetItem(v)
+                item = NumericTableWidgetItem(v) if c in {0, 1, 7, 11, 12} and v not in ('', '-') else QTableWidgetItem(v)
                 item.setData(Qt.UserRole, op.uid)
                 self.table.setItem(r, c, item)
 
@@ -1654,11 +1462,7 @@ class OperationsTab(QWidget):
         selected_uid = self._selected_operation_uid()
         dlg = OperationDialog(self.model, parent=self, default_uid=self._unused_operation_uid())
         if dlg.exec():
-            try:
-                value = dlg.get_value()
-            except ValueError:
-                QMessageBox.warning(self, "入力エラー", "動作UID / 依存元UID / 時間(ms) は数値で入力してください。")
-                return
+            value = dlg.get_value()
             if value["action_uid"] is None:
                 QMessageBox.warning(self, "入力不足", "対象小項目にポイントが必要です。")
                 return
@@ -1666,7 +1470,13 @@ class OperationsTab(QWidget):
                 QMessageBox.warning(self, "UID重複", f"動作UID {value['uid']} はすでに存在します。")
                 return
             self.model_about_to_change.emit("動作追加")
-            new_op = OperationInstance(uid=value["uid"], action_uid=value["action_uid"], operation_mode=value["operation_mode"], time_mode=value["time_mode"], duration_ms=value["duration_ms"], start_trigger=value["start_trigger"], start_operation_uid=value["start_operation_uid"], end_mode=value["end_mode"], end_trigger=value["end_trigger"], end_operation_uid=value["end_operation_uid"], from_value=value["from_value"], to_value=value["to_value"])
+            new_op = OperationInstance(
+                uid=value["uid"], action_uid=value["action_uid"], operation_mode=value["operation_mode"],
+                time_mode=value["time_mode"], duration_ms=value["duration_ms"], start_trigger=value["start_trigger"],
+                start_operation_uid=value["start_operation_uid"], end_mode=value["end_mode"],
+                end_trigger=value["end_trigger"], end_operation_uid=value["end_operation_uid"],
+                from_value=value["from_value"], to_value=value["to_value"]
+            )
             if selected_uid is None:
                 self.model.operations.append(new_op)
             else:
@@ -1684,17 +1494,14 @@ class OperationsTab(QWidget):
             return
         dlg = OperationDialog(self.model, operation=op, parent=self)
         if dlg.exec():
-            try:
-                value = dlg.get_value()
-            except ValueError:
-                QMessageBox.warning(self, "入力エラー", "動作UID / 依存元UID / 時間(ms) は数値で入力してください。")
-                return
+            value = dlg.get_value()
             if self._uid_exists(value["uid"], exclude_uid=op.uid):
                 QMessageBox.warning(self, "UID重複", f"動作UID {value['uid']} はすでに存在します。")
                 return
             self.model_about_to_change.emit("動作編集")
             old_uid = op.uid
-            for k in ["uid","action_uid","operation_mode","time_mode","duration_ms","start_trigger","start_operation_uid","end_mode","end_trigger","end_operation_uid","from_value","to_value"]:
+            for k in ["uid", "action_uid", "operation_mode", "time_mode", "duration_ms", "start_trigger", "start_operation_uid",
+                      "end_mode", "end_trigger", "end_operation_uid", "from_value", "to_value"]:
                 setattr(op, k, value[k])
             for other in self.model.operations:
                 if other is op:
@@ -1730,7 +1537,6 @@ class ChartTab(QWidget):
     def __init__(self, model: AppModel, parent=None):
         super().__init__(parent)
         self.model = model
-
         layout = QVBoxLayout(self)
 
         top_row = QHBoxLayout()
@@ -1744,11 +1550,27 @@ class ChartTab(QWidget):
         top_row.addStretch()
         layout.addLayout(top_row)
 
+        self.left_header = QTableWidget(1, 4)
+        self.left_header.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.left_header.setSelectionMode(QAbstractItemView.NoSelection)
+        self.left_header.verticalHeader().setVisible(False)
+        self.left_header.horizontalHeader().setVisible(False)
+        self.left_header.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.left_header.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.left_header.setFocusPolicy(Qt.NoFocus)
+        self.left_header.setFixedHeight(self.chart_left_header_height())
+        for i, label in enumerate(["大項目", "中項目", "小項目", "ポイント"]):
+            item = QTableWidgetItem(label)
+            item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            item.setBackground(QBrush(QColor(236, 240, 244)))
+            self.left_header.setItem(0, i, item)
+
         self.left_table = QTableWidget(0, 4)
         self.left_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.left_table.setSelectionMode(QAbstractItemView.NoSelection)
         self.left_table.verticalHeader().setVisible(False)
-        self.left_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.left_table.horizontalHeader().setVisible(False)
         self.left_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.left_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.left_table.setFocusPolicy(Qt.NoFocus)
@@ -1759,7 +1581,7 @@ class ChartTab(QWidget):
         self.header_view.setScene(QGraphicsScene(self.header_view))
         self.header_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.header_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.header_view.setFixedHeight(70)
+        self.header_view.setFixedHeight(self.chart_left_header_height())
         self.header_view.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.header_view.setFrameShape(QGraphicsView.NoFrame)
 
@@ -1769,8 +1591,9 @@ class ChartTab(QWidget):
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(0)
-        grid.addWidget(self.left_table, 1, 0)
+        grid.addWidget(self.left_header, 0, 0)
         grid.addWidget(self.header_view, 0, 1)
+        grid.addWidget(self.left_table, 1, 0)
         grid.addWidget(self.chart, 1, 1)
         grid.setColumnStretch(1, 1)
         layout.addLayout(grid, 1)
@@ -1787,9 +1610,15 @@ class ChartTab(QWidget):
 
         self.refresh()
 
+    def chart_left_header_height(self):
+        return TimingChartView().left_layout()["header_h"]
+
     def _sync_left_width(self, *args):
-        total = sum(self.left_table.columnWidth(i) for i in range(self.left_table.columnCount())) + self.left_table.frameWidth() * 2
-        self.left_table.setFixedWidth(total + self.left_table.verticalHeader().width())
+        total = sum(self.left_table.columnWidth(i) for i in range(self.left_table.columnCount()))
+        for i in range(self.left_table.columnCount()):
+            self.left_header.setColumnWidth(i, self.left_table.columnWidth(i))
+        self.left_header.setFixedWidth(total + self.left_header.frameWidth() * 2 + self.left_header.verticalHeader().width())
+        self.left_table.setFixedWidth(total + self.left_table.frameWidth() * 2 + self.left_table.verticalHeader().width())
 
     def on_link_mode_toggled(self, checked: bool):
         self.chart.set_link_mode(checked)
@@ -1800,8 +1629,7 @@ class ChartTab(QWidget):
         if not target:
             return
         answer = QMessageBox.question(
-            self,
-            "依存設定",
+            self, "依存設定",
             f"動作UID {source_uid} → 動作UID {target_uid} の開始依存を設定しますか？\nはい: 元動作の終了で開始\nいいえ: 元動作の開始で開始",
             QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
         )
@@ -1821,10 +1649,6 @@ class ChartTab(QWidget):
         self._sync_left_width()
         self.chart.clear_pending_selection()
 
-
-# =========================
-# Main window
-# =========================
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -1977,101 +1801,34 @@ class MainWindow(QMainWindow):
         small1 = HierarchyItem(uid=3, id_number=1, name="Z軸", level="small", parent_uid=2, action_type="points")
         small2 = HierarchyItem(uid=4, id_number=2, name="吸着センサ", level="small", parent_uid=2, action_type="onoff")
         small3 = HierarchyItem(uid=8, id_number=3, name="クランプ", level="small", parent_uid=2, action_type="onoff")
-
         middle2 = HierarchyItem(uid=5, id_number=2, name="供給ユニット", level="middle", parent_uid=1)
         small4 = HierarchyItem(uid=6, id_number=1, name="供給X軸", level="small", parent_uid=5, action_type="points")
         small5 = HierarchyItem(uid=7, id_number=2, name="ワーク検知", level="small", parent_uid=5, action_type="onoff")
-
         large2 = HierarchyItem(uid=9, id_number=2, name="設備B", level="large", parent_uid=None)
         middle3 = HierarchyItem(uid=10, id_number=1, name="検査ユニット", level="middle", parent_uid=9)
         small6 = HierarchyItem(uid=11, id_number=1, name="検査シリンダ", level="small", parent_uid=10, action_type="points")
         small7 = HierarchyItem(uid=12, id_number=2, name="OK判定", level="small", parent_uid=10, action_type="onoff")
-
-        self.model.hierarchy_items = [
-            large1, middle1, small1, small2, small3,
-            middle2, small4, small5,
-            large2, middle3, small6, small7,
-        ]
-
+        self.model.hierarchy_items = [large1, middle1, small1, small2, small3, middle2, small4, small5, large2, middle3, small6, small7]
         self.model.action_definitions = [
             ActionDefinition(uid=1, small_item_uid=3, action_no=1, name="上昇", points=["原点", "待機", "上限"]),
             ActionDefinition(uid=2, small_item_uid=3, action_no=2, name="下降", points=["原点", "待機", "上限"]),
             ActionDefinition(uid=3, small_item_uid=4, action_no=1, name="ON", points=["ON", "OFF"]),
-            ActionDefinition(uid=3, small_item_uid=4, action_no=2, name="OFF", points=["ON", "OFF"]),
             ActionDefinition(uid=4, small_item_uid=8, action_no=1, name="ON", points=["ON", "OFF"]),
-            ActionDefinition(uid=4, small_item_uid=8, action_no=2, name="OFF", points=["ON", "OFF"]),
             ActionDefinition(uid=5, small_item_uid=6, action_no=1, name="供給移動", points=["受取", "待機", "供給"]),
             ActionDefinition(uid=6, small_item_uid=7, action_no=1, name="ON", points=["ON", "OFF"]),
-            ActionDefinition(uid=6, small_item_uid=7, action_no=2, name="OFF", points=["ON", "OFF"]),
             ActionDefinition(uid=7, small_item_uid=11, action_no=1, name="前進後退", points=["後退", "中間", "前進"]),
             ActionDefinition(uid=8, small_item_uid=12, action_no=1, name="ON", points=["ON", "OFF"]),
-            ActionDefinition(uid=8, small_item_uid=12, action_no=2, name="OFF", points=["ON", "OFF"]),
         ]
-
         self.model.operations = [
-            OperationInstance(
-                uid=1, action_uid=1, duration_ms=1200,
-                operation_mode="ポイント移動", time_mode="直値指定",
-                start_trigger="時刻0", start_operation_uid=None,
-                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
-                from_value="原点", to_value="上限",
-            ),
-            OperationInstance(
-                uid=2, action_uid=3, duration_ms=300,
-                operation_mode="ON-OFF", time_mode="直値指定",
-                start_trigger="終了", start_operation_uid=1,
-                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
-                from_value="OFF", to_value="ON",
-            ),
-            OperationInstance(
-                uid=3, action_uid=4, duration_ms=200,
-                operation_mode="ON-OFF", time_mode="直値指定",
-                start_trigger="終了", start_operation_uid=2,
-                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
-                from_value="OFF", to_value="ON",
-            ),
-            OperationInstance(
-                uid=4, action_uid=5, duration_ms=900,
-                operation_mode="ポイント移動", time_mode="直値指定",
-                start_trigger="開始", start_operation_uid=3,
-                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
-                from_value="待機", to_value="供給",
-            ),
-            OperationInstance(
-                uid=5, action_uid=6, duration_ms=150,
-                operation_mode="ON-OFF", time_mode="直値指定",
-                start_trigger="終了", start_operation_uid=4,
-                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
-                from_value="OFF", to_value="ON",
-            ),
-            OperationInstance(
-                uid=6, action_uid=7, duration_ms=800,
-                operation_mode="ポイント移動", time_mode="直値指定",
-                start_trigger="終了", start_operation_uid=5,
-                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
-                from_value="後退", to_value="前進",
-            ),
-            OperationInstance(
-                uid=7, action_uid=8, duration_ms=250,
-                operation_mode="ON-OFF", time_mode="直値指定",
-                start_trigger="終了", start_operation_uid=6,
-                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
-                from_value="OFF", to_value="ON",
-            ),
-            OperationInstance(
-                uid=8, action_uid=3, duration_ms=300,
-                operation_mode="ON-OFF", time_mode="直値指定",
-                start_trigger="終了", start_operation_uid=7,
-                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
-                from_value="ON", to_value="OFF",
-            ),
-            OperationInstance(
-                uid=9, action_uid=2, duration_ms=450,
-                operation_mode="ポイント移動", time_mode="直値指定",
-                start_trigger="終了", start_operation_uid=7,
-                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
-                from_value="上限", to_value="待機",
-            ),
+            OperationInstance(uid=1, action_uid=1, duration_ms=1200, operation_mode="ポイント移動", time_mode="直値指定", start_trigger="時刻0", start_operation_uid=None, end_mode="直値指定", end_trigger="終了", end_operation_uid=None, from_value="原点", to_value="上限"),
+            OperationInstance(uid=2, action_uid=3, duration_ms=300, operation_mode="ON-OFF", time_mode="直値指定", start_trigger="終了", start_operation_uid=1, end_mode="直値指定", end_trigger="終了", end_operation_uid=None, from_value="OFF", to_value="ON"),
+            OperationInstance(uid=3, action_uid=4, duration_ms=200, operation_mode="ON-OFF", time_mode="直値指定", start_trigger="終了", start_operation_uid=2, end_mode="直値指定", end_trigger="終了", end_operation_uid=None, from_value="OFF", to_value="ON"),
+            OperationInstance(uid=4, action_uid=5, duration_ms=900, operation_mode="ポイント移動", time_mode="直値指定", start_trigger="開始", start_operation_uid=3, end_mode="直値指定", end_trigger="終了", end_operation_uid=None, from_value="待機", to_value="供給"),
+            OperationInstance(uid=5, action_uid=6, duration_ms=150, operation_mode="ON-OFF", time_mode="直値指定", start_trigger="終了", start_operation_uid=4, end_mode="直値指定", end_trigger="終了", end_operation_uid=None, from_value="OFF", to_value="ON"),
+            OperationInstance(uid=6, action_uid=7, duration_ms=800, operation_mode="ポイント移動", time_mode="直値指定", start_trigger="終了", start_operation_uid=5, end_mode="直値指定", end_trigger="終了", end_operation_uid=None, from_value="後退", to_value="前進"),
+            OperationInstance(uid=7, action_uid=8, duration_ms=250, operation_mode="ON-OFF", time_mode="直値指定", start_trigger="終了", start_operation_uid=6, end_mode="直値指定", end_trigger="終了", end_operation_uid=None, from_value="OFF", to_value="ON"),
+            OperationInstance(uid=8, action_uid=3, duration_ms=300, operation_mode="ON-OFF", time_mode="直値指定", start_trigger="終了", start_operation_uid=7, end_mode="直値指定", end_trigger="終了", end_operation_uid=None, from_value="ON", to_value="OFF"),
+            OperationInstance(uid=9, action_uid=2, duration_ms=450, operation_mode="ポイント移動", time_mode="直値指定", start_trigger="終了", start_operation_uid=7, end_mode="直値指定", end_trigger="終了", end_operation_uid=None, from_value="上限", to_value="待機"),
         ]
         self.model.normalize_onoff_points()
 
