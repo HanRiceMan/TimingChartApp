@@ -1086,7 +1086,7 @@ class TimingChartView(QGraphicsView):
                 py = point_y(top, point_values, p)
                 scene.addLine(left_w - 8, py, left_w, py, QPen(QColor(140, 140, 140)))
 
-        # dependency arrows as horizontal wavy black arrows, separated from time-series lines
+        # dependency arrows as dashed black connector lines, visually separate from timing traces
         import math
         for op in model.operations:
             if op.start_operation_uid is None:
@@ -1098,39 +1098,26 @@ class TimingChartView(QGraphicsView):
             p1 = op_anchor[op.start_operation_uid][src_key]
             p2 = op_anchor[op.uid]["start"]
 
-            start_x = min(p1.x(), p2.x())
-            end_x = max(p1.x(), p2.x())
-            y_base = min(p1.y(), p2.y()) - 36
+            y_route = min(p1.y(), p2.y()) - 34
+            dep_pen = QPen(QColor(20, 20, 20), 2)
+            dep_pen.setStyle(Qt.DashLine)
 
-            amplitude = 8
-            wavelength = 90
-            steps = max(24, int((end_x - start_x) / 12))
-            path = QPainterPath(QPointF(start_x, y_base))
-            for i in range(1, steps + 1):
-                t = i / steps
-                x = start_x + (end_x - start_x) * t
-                y = y_base + amplitude * math.sin((x - start_x) / wavelength * 2 * math.pi)
-                path.lineTo(x, y)
+            # orthogonal dashed route
+            scene.addLine(p1.x(), p1.y(), p1.x(), y_route, dep_pen)
+            scene.addLine(p1.x(), y_route, p2.x(), y_route, dep_pen)
+            scene.addLine(p2.x(), y_route, p2.x(), p2.y(), dep_pen)
 
-            path_item = QGraphicsPathItem(path)
-            path_item.setPen(QPen(QColor(20, 20, 20), 3))
-            scene.addItem(path_item)
-
-            arrow_tip = QPointF(end_x, y_base + amplitude * math.sin((end_x - start_x) / wavelength * 2 * math.pi))
-            arrow_size = 12
+            # arrow head at destination
+            arrow_size = 10
             arrow = QPolygonF([
-                arrow_tip,
-                QPointF(arrow_tip.x() - arrow_size, arrow_tip.y() - arrow_size * 0.8),
-                QPointF(arrow_tip.x() - arrow_size, arrow_tip.y() + arrow_size * 0.8),
+                p2,
+                QPointF(p2.x() - arrow_size * math.cos(math.pi / 6), p2.y() - arrow_size * math.sin(math.pi / 6)),
+                QPointF(p2.x() + arrow_size * math.cos(math.pi / 6), p2.y() - arrow_size * math.sin(math.pi / 6)),
             ])
             arrow_item = QGraphicsPolygonItem(arrow)
             arrow_item.setBrush(QBrush(QColor(20, 20, 20)))
             arrow_item.setPen(QPen(QColor(20, 20, 20)))
             scene.addItem(arrow_item)
-
-            # thin vertical connectors from wave to source/target anchors
-            scene.addLine(p1.x(), y_base, p1.x(), p1.y(), QPen(QColor(20, 20, 20), 1))
-            scene.addLine(p2.x(), y_base, p2.x(), p2.y(), QPen(QColor(20, 20, 20), 1))
 
 
 class ClearSelectionTreeWidget(QTreeWidget):
