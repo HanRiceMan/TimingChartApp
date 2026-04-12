@@ -1090,7 +1090,7 @@ class TimingChartView(QGraphicsView):
         import math
 
         def draw_manual_dashed_line(x1: float, y1: float, x2: float, y2: float, color: QColor, width: int = 2,
-                                    dash_len: float = 8.0, gap_len: float = 5.0):
+                                    dash_len: float = 8.0, gap_len: float = 5.0, start_with_solid: float = 0.0):
             dx = x2 - x1
             dy = y2 - y1
             length = (dx * dx + dy * dy) ** 0.5
@@ -1098,9 +1098,20 @@ class TimingChartView(QGraphicsView):
                 return
             ux = dx / length
             uy = dy / length
-            pos = 0.0
             pen = QPen(color, width)
             pen.setCapStyle(Qt.FlatCap)
+
+            # draw an explicit solid stub from the source point so the dashed line visibly starts on the dot
+            pos = 0.0
+            if start_with_solid > 0.0:
+                solid_end = min(start_with_solid, length)
+                sx = x1
+                sy = y1
+                ex = x1 + ux * solid_end
+                ey = y1 + uy * solid_end
+                scene.addLine(sx, sy, ex, ey, pen)
+                pos = solid_end
+
             while pos < length:
                 seg_start = pos
                 seg_end = min(pos + dash_len, length)
@@ -1131,7 +1142,7 @@ class TimingChartView(QGraphicsView):
                 # destination is below: route above both points, arrow points downward
                 y_route = min(p1.y(), p2.y()) - 34
                 end_y = p2.y() - arrow_size
-                draw_manual_dashed_line(p1.x(), p1.y(), p1.x(), y_route, color)
+                draw_manual_dashed_line(p1.x(), p1.y(), p1.x(), y_route, color, start_with_solid=10.0)
                 draw_manual_dashed_line(p1.x(), y_route, p2.x(), y_route, color)
                 draw_manual_dashed_line(p2.x(), y_route, p2.x(), end_y, color)
 
@@ -1144,7 +1155,7 @@ class TimingChartView(QGraphicsView):
                 # destination is above: route below both points, arrow points upward
                 y_route = max(p1.y(), p2.y()) + 34
                 end_y = p2.y() + arrow_size
-                draw_manual_dashed_line(p1.x(), p1.y(), p1.x(), y_route, color)
+                draw_manual_dashed_line(p1.x(), p1.y(), p1.x(), y_route, color, start_with_solid=10.0)
                 draw_manual_dashed_line(p1.x(), y_route, p2.x(), y_route, color)
                 draw_manual_dashed_line(p2.x(), y_route, p2.x(), end_y, color)
 
