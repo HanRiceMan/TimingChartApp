@@ -1122,18 +1122,16 @@ class TimingChartView(QGraphicsView):
             p2 = op_anchor[op.uid]["start"]
 
             arrow_size = 10
-            source_offset = 8
             color = QColor(20, 20, 20)
 
             # mark the true source point so the dependency clearly starts on the timing-chart point
-            source_dot = scene.addEllipse(p1.x() - 2.5, p1.y() - 2.5, 5, 5, QPen(color), QBrush(color))
+            scene.addEllipse(p1.x() - 2.5, p1.y() - 2.5, 5, 5, QPen(color), QBrush(color))
 
             if p2.y() >= p1.y():
                 # destination is below: route above both points, arrow points downward
                 y_route = min(p1.y(), p2.y()) - 34
-                start_y = p1.y() - source_offset
                 end_y = p2.y() - arrow_size
-                draw_manual_dashed_line(p1.x(), start_y, p1.x(), y_route, color)
+                draw_manual_dashed_line(p1.x(), p1.y(), p1.x(), y_route, color)
                 draw_manual_dashed_line(p1.x(), y_route, p2.x(), y_route, color)
                 draw_manual_dashed_line(p2.x(), y_route, p2.x(), end_y, color)
 
@@ -1145,9 +1143,8 @@ class TimingChartView(QGraphicsView):
             else:
                 # destination is above: route below both points, arrow points upward
                 y_route = max(p1.y(), p2.y()) + 34
-                start_y = p1.y() + source_offset
                 end_y = p2.y() + arrow_size
-                draw_manual_dashed_line(p1.x(), start_y, p1.x(), y_route, color)
+                draw_manual_dashed_line(p1.x(), p1.y(), p1.x(), y_route, color)
                 draw_manual_dashed_line(p1.x(), y_route, p2.x(), y_route, color)
                 draw_manual_dashed_line(p2.x(), y_route, p2.x(), end_y, color)
 
