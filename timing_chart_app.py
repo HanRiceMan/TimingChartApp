@@ -990,6 +990,21 @@ class TimingChartView(QGraphicsView):
 
         # draw state timelines by small item so inactive periods are also connected
         timeline_end = max_time + 1200
+
+        palette = [
+            QColor(45, 92, 191),
+            QColor(28, 124, 84),
+            QColor(180, 90, 40),
+            QColor(120, 70, 170),
+            QColor(160, 60, 120),
+            QColor(60, 140, 150),
+        ]
+
+        def color_for_small(small_uid: int) -> QColor:
+            ordered = sorted([x.uid for x in model.small_items()])
+            idx = ordered.index(small_uid) if small_uid in ordered else 0
+            return palette[idx % len(palette)]
+
         ops_by_small: Dict[int, List[OperationInstance]] = {}
         for op in model.operations:
             action_def = model.get_action_def(op.action_uid)
@@ -1019,25 +1034,26 @@ class TimingChartView(QGraphicsView):
                 # hold previous state until this operation begins
                 hold_x1 = left_w + current_time * time_scale
                 hold_x2 = x1
+                item_color = color_for_small(small_uid)
                 if hold_x2 > hold_x1:
-                    hold_pen = QPen(QColor(200, 40, 40), 3)
+                    hold_pen = QPen(item_color, 3)
                     scene.addLine(hold_x1, current_y, hold_x2, current_y, hold_pen)
 
                 # transition during the operation
                 small_item = model.get_hierarchy(small_uid)
                 if small_item and small_item.action_type == "onoff":
-                    trans_pen = QPen(QColor(28, 124, 84), 3)
+                    trans_pen = QPen(item_color, 3)
                     if y1 != current_y:
-                        scene.addLine(x1, current_y, x1, y1, QPen(QColor(200, 40, 40), 3))
+                        scene.addLine(x1, current_y, x1, y1, trans_pen)
                     if y1 != y2:
                         scene.addLine(x1, y1, x1, y2, trans_pen)
                         scene.addLine(x1, y2, x2, y2, trans_pen)
                     else:
                         scene.addLine(x1, y1, x2, y2, trans_pen)
                 else:
-                    trans_pen = QPen(QColor(45, 92, 191), 3)
+                    trans_pen = QPen(item_color, 3)
                     if y1 != current_y:
-                        scene.addLine(x1, current_y, x1, y1, QPen(QColor(200, 40, 40), 3))
+                        scene.addLine(x1, current_y, x1, y1, trans_pen)
                     scene.addLine(x1, y1, x2, y2, trans_pen)
 
                 hit_rect = QRectF(min(x1, x2) - 8, min(current_y, y1, y2) - 12, max(24, abs(x2 - x1) + 16), max(current_y, y1, y2) - min(current_y, y1, y2) + 24)
@@ -1058,7 +1074,7 @@ class TimingChartView(QGraphicsView):
             tail_x1 = left_w + current_time * time_scale
             tail_x2 = left_w + timeline_end * time_scale
             if tail_x2 > tail_x1:
-                tail_pen = QPen(QColor(200, 40, 40), 3)
+                tail_pen = QPen(color_for_small(small_uid), 3)
                 scene.addLine(tail_x1, current_y, tail_x2, current_y, tail_pen)
 
         # left edge ticks for each point row
@@ -1070,7 +1086,7 @@ class TimingChartView(QGraphicsView):
                 py = point_y(top, point_values, p)
                 scene.addLine(left_w - 8, py, left_w, py, QPen(QColor(140, 140, 140)))
 
-        # dependency arrows as black wavy lines so they do not blend with time-series traces
+        # dependency arrows as horizontal wavy black arrows, separated from time-series lines
         import math
         for op in model.operations:
             if op.start_operation_uid is None:
@@ -1082,36 +1098,39 @@ class TimingChartView(QGraphicsView):
             p1 = op_anchor[op.start_operation_uid][src_key]
             p2 = op_anchor[op.uid]["start"]
 
-            dx = p2.x() - p1.x()
-            dy = p2.y() - p1.y()
-            length = max(1.0, (dx * dx + dy * dy) ** 0.5)
-            nx = -dy / length
-            ny = dx / length
+            start_x = min(p1.x(), p2.x())
+            end_x = max(p1.x(), p2.x())
+            y_base = min(p1.y(), p2.y()) - 36
 
-            path = QPainterPath(p1)
-            steps = max(6, int(length / 80))
+            amplitude = 8
+            wavelength = 90
+            steps = max(24, int((end_x - start_x) / 12))
+            path = QPainterPath(QPointF(start_x, y_base))
             for i in range(1, steps + 1):
                 t = i / steps
-                bx = p1.x() + dx * t
-                by = p1.y() + dy * t
-                wave = 8 * math.sin(t * math.pi * steps)
-                path.lineTo(bx + nx * wave, by + ny * wave)
+                x = start_x + (end_x - start_x) * t
+                y = y_base + amplitude * math.sin((x - start_x) / wavelength * 2 * math.pi)
+                path.lineTo(x, y)
 
             path_item = QGraphicsPathItem(path)
-            path_item.setPen(QPen(QColor(30, 30, 30), 2))
+            path_item.setPen(QPen(QColor(20, 20, 20), 3))
             scene.addItem(path_item)
 
-            angle = math.atan2(-(p2.y() - p1.y()), p2.x() - p1.x())
-            arrow_size = 10
+            arrow_tip = QPointF(end_x, y_base + amplitude * math.sin((end_x - start_x) / wavelength * 2 * math.pi))
+            arrow_size = 12
             arrow = QPolygonF([
-                p2,
-                QPointF(p2.x() - arrow_size * math.cos(angle - math.pi / 6), p2.y() + arrow_size * math.sin(angle - math.pi / 6)),
-                QPointF(p2.x() - arrow_size * math.cos(angle + math.pi / 6), p2.y() + arrow_size * math.sin(angle + math.pi / 6)),
+                arrow_tip,
+                QPointF(arrow_tip.x() - arrow_size, arrow_tip.y() - arrow_size * 0.8),
+                QPointF(arrow_tip.x() - arrow_size, arrow_tip.y() + arrow_size * 0.8),
             ])
             arrow_item = QGraphicsPolygonItem(arrow)
-            arrow_item.setBrush(QBrush(QColor(30, 30, 30)))
-            arrow_item.setPen(QPen(QColor(30, 30, 30)))
+            arrow_item.setBrush(QBrush(QColor(20, 20, 20)))
+            arrow_item.setPen(QPen(QColor(20, 20, 20)))
             scene.addItem(arrow_item)
+
+            # thin vertical connectors from wave to source/target anchors
+            scene.addLine(p1.x(), y_base, p1.x(), p1.y(), QPen(QColor(20, 20, 20), 1))
+            scene.addLine(p2.x(), y_base, p2.x(), p2.y(), QPen(QColor(20, 20, 20), 1))
 
 
 class ClearSelectionTreeWidget(QTreeWidget):
