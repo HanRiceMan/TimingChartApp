@@ -1061,22 +1061,47 @@ class TimingChartView(QGraphicsView):
             if tail_x2 > tail_x1:
                 scene.addLine(tail_x1, current_y, tail_x2, current_y, QPen(item_color, 3))
 
-        # dependency arrows
+# dependency arrows as manually dashed black connector lines
         import math
-        def draw_manual_dashed_line(x1: float, y1: float, x2: float, y2: float, color: QColor, width: int = 2, dash_len: float = 8.0, gap_len: float = 5.0):
+
+        def draw_manual_dashed_line(
+            x1: float, y1: float, x2: float, y2: float,
+            color: QColor, width: int = 2,
+            dash_len: float = 8.0, gap_len: float = 5.0,
+            start_with_solid: float = 0.0,
+        ):
             dx = x2 - x1
             dy = y2 - y1
             length = (dx * dx + dy * dy) ** 0.5
             if length <= 0.001:
                 return
+
             ux = dx / length
             uy = dy / length
-            pos = 0.0
+
             pen = QPen(color, width)
             pen.setCapStyle(Qt.FlatCap)
+
+            pos = 0.0
+
+            # 始点だけ少し実線にして、ちゃんと始点から出ているように見せる
+            if start_with_solid > 0.0:
+                solid_end = min(start_with_solid, length)
+                sx = x1
+                sy = y1
+                ex = x1 + ux * solid_end
+                ey = y1 + uy * solid_end
+                scene.addLine(sx, sy, ex, ey, pen)
+                pos = solid_end
+
             while pos < length:
+                seg_start = pos
                 seg_end = min(pos + dash_len, length)
-                scene.addLine(x1 + ux * pos, y1 + uy * pos, x1 + ux * seg_end, y1 + uy * seg_end, pen)
+                sx = x1 + ux * seg_start
+                sy = y1 + uy * seg_start
+                ex = x1 + ux * seg_end
+                ey = y1 + uy * seg_end
+                scene.addLine(sx, sy, ex, ey, pen)
                 pos += dash_len + gap_len
 
         for op in model.operations:
@@ -1084,32 +1109,66 @@ class TimingChartView(QGraphicsView):
                 continue
             if op.start_operation_uid not in op_anchor or op.uid not in op_anchor:
                 continue
+
             src_key = "end" if op.start_trigger == "終了" else "start"
             p1 = op_anchor[op.start_operation_uid][src_key]
             p2 = op_anchor[op.uid]["start"]
+
             color = QColor(20, 20, 20)
             arrow_size = 10
-            scene.addEllipse(p1.x() - 2.5, p1.y() - 2.5, 5, 5, QPen(color), QBrush(color))
-            if p2.y() >= p1.y():
-                y_route = min(p1.y(), p2.y()) - 34
-                end_y = p2.y() - arrow_size
-                draw_manual_dashed_line(p1.x(), p1.y(), p1.x(), y_route, color)
-                draw_manual_dashed_line(p1.x(), y_route, p2.x(), y_route, color)
-                draw_manual_dashed_line(p2.x(), y_route, p2.x(), end_y, color)
-                arrow = QPolygonF([p2, QPointF(p2.x() - arrow_size * math.cos(math.pi / 6), p2.y() - arrow_size * math.sin(math.pi / 6)), QPointF(p2.x() + arrow_size * math.cos(math.pi / 6), p2.y() - arrow_size * math.sin(math.pi / 6))])
-            else:
-                y_route = max(p1.y(), p2.y()) + 34
-                end_y = p2.y() + arrow_size
-                draw_manual_dashed_line(p1.x(), p1.y(), p1.x(), y_route, color)
-                draw_manual_dashed_line(p1.x(), y_route, p2.x(), y_route, color)
-                draw_manual_dashed_line(p2.x(), y_route, p2.x(), end_y, color)
-                arrow = QPolygonF([p2, QPointF(p2.x() - arrow_size * math.cos(math.pi / 6), p2.y() + arrow_size * math.sin(math.pi / 6)), QPointF(p2.x() + arrow_size * math.cos(math.pi / 6), p2.y() + arrow_size * math.sin(math.pi / 6))])
+
+            dx = p2.x() - p1.x()
+            dy = p2.y() - p1.y()
+            length = (dx * dx + dy * dy) ** 0.5
+            if length <= 0.001:
+                continue
+
+            ux = dx / length
+            uy = dy / length
+
+            # 矢印の先端ぶん手前で線を止める
+            line_end = QPointF(
+                p2.x() - ux * arrow_size,
+                p2.y() - uy * arrow_size,
+            )
+
+            # 始点マーカー
+            scene.addEllipse(
+                p1.x() - 2.5, p1.y() - 2.5, 5, 5,
+                QPen(color), QBrush(color)
+            )
+
+            # 直線の破線
+            draw_manual_dashed_line(
+                p1.x(), p1.y(),
+                line_end.x(), line_end.y(),
+                color,
+                width=2,
+                dash_len=8.0,
+                gap_len=5.0,
+                start_with_solid=10.0,
+            )
+
+            # 矢印（三角形）を線の向きに合わせて回転
+            px = -uy
+            py = ux
+
+            arrow = QPolygonF([
+                p2,
+                QPointF(
+                    line_end.x() + px * (arrow_size * 0.45),
+                    line_end.y() + py * (arrow_size * 0.45),
+                ),
+                QPointF(
+                    line_end.x() - px * (arrow_size * 0.45),
+                    line_end.y() - py * (arrow_size * 0.45),
+                ),
+            ])
+
             arrow_item = QGraphicsPolygonItem(arrow)
             arrow_item.setBrush(QBrush(color))
             arrow_item.setPen(QPen(color))
             scene.addItem(arrow_item)
-
-        self._emit_link_status()
 
 
 class ClearSelectionTreeWidget(QTreeWidget):
