@@ -1086,8 +1086,31 @@ class TimingChartView(QGraphicsView):
                 py = point_y(top, point_values, p)
                 scene.addLine(left_w - 8, py, left_w, py, QPen(QColor(140, 140, 140)))
 
-        # dependency arrows as dashed black connector lines, visually separate from timing traces
+        # dependency arrows as manually dashed black connector lines, starting exactly on the chart point
         import math
+
+        def draw_manual_dashed_line(x1: float, y1: float, x2: float, y2: float, color: QColor, width: int = 2,
+                                    dash_len: float = 8.0, gap_len: float = 5.0):
+            dx = x2 - x1
+            dy = y2 - y1
+            length = (dx * dx + dy * dy) ** 0.5
+            if length <= 0.001:
+                return
+            ux = dx / length
+            uy = dy / length
+            pos = 0.0
+            pen = QPen(color, width)
+            pen.setCapStyle(Qt.FlatCap)
+            while pos < length:
+                seg_start = pos
+                seg_end = min(pos + dash_len, length)
+                sx = x1 + ux * seg_start
+                sy = y1 + uy * seg_start
+                ex = x1 + ux * seg_end
+                ey = y1 + uy * seg_end
+                scene.addLine(sx, sy, ex, ey, pen)
+                pos += dash_len + gap_len
+
         for op in model.operations:
             if op.start_operation_uid is None:
                 continue
@@ -1098,20 +1121,16 @@ class TimingChartView(QGraphicsView):
             p1 = op_anchor[op.start_operation_uid][src_key]
             p2 = op_anchor[op.uid]["start"]
 
-            dep_pen = QPen(QColor(20, 20, 20), 2)
-            dep_pen.setStyle(Qt.DashLine)
-            dep_pen.setCapStyle(Qt.FlatCap)
-
             arrow_size = 10
-            source_gap = 8
+            color = QColor(20, 20, 20)
+
             if p2.y() >= p1.y():
                 # destination is below: route above both points, arrow points downward
                 y_route = min(p1.y(), p2.y()) - 34
-                start_y = p1.y() - source_gap
                 end_y = p2.y() - arrow_size
-                scene.addLine(p1.x(), start_y, p1.x(), y_route, dep_pen)
-                scene.addLine(p1.x(), y_route, p2.x(), y_route, dep_pen)
-                scene.addLine(p2.x(), y_route, p2.x(), end_y, dep_pen)
+                draw_manual_dashed_line(p1.x(), p1.y(), p1.x(), y_route, color)
+                draw_manual_dashed_line(p1.x(), y_route, p2.x(), y_route, color)
+                draw_manual_dashed_line(p2.x(), y_route, p2.x(), end_y, color)
 
                 arrow = QPolygonF([
                     p2,
@@ -1121,11 +1140,10 @@ class TimingChartView(QGraphicsView):
             else:
                 # destination is above: route below both points, arrow points upward
                 y_route = max(p1.y(), p2.y()) + 34
-                start_y = p1.y() + source_gap
                 end_y = p2.y() + arrow_size
-                scene.addLine(p1.x(), start_y, p1.x(), y_route, dep_pen)
-                scene.addLine(p1.x(), y_route, p2.x(), y_route, dep_pen)
-                scene.addLine(p2.x(), y_route, p2.x(), end_y, dep_pen)
+                draw_manual_dashed_line(p1.x(), p1.y(), p1.x(), y_route, color)
+                draw_manual_dashed_line(p1.x(), y_route, p2.x(), y_route, color)
+                draw_manual_dashed_line(p2.x(), y_route, p2.x(), end_y, color)
 
                 arrow = QPolygonF([
                     p2,
@@ -1134,8 +1152,8 @@ class TimingChartView(QGraphicsView):
                 ])
 
             arrow_item = QGraphicsPolygonItem(arrow)
-            arrow_item.setBrush(QBrush(QColor(20, 20, 20)))
-            arrow_item.setPen(QPen(QColor(20, 20, 20)))
+            arrow_item.setBrush(QBrush(color))
+            arrow_item.setPen(QPen(color))
             scene.addItem(arrow_item)
 
 
