@@ -950,6 +950,21 @@ class TimingChartView(QGraphicsView):
         time_scale = 0.16
         smalls = self.ordered_smalls(model)
         row_map = {s.uid: i for i, s in enumerate(smalls)}
+
+        def point_y_local(top: float, values: List[str], index: int) -> float:
+            if not values:
+                return top + row_h / 2
+            n = max(1, len(values) - 1)
+            return top + 18 + (row_h - 36) * (index / n)
+
+        def point_y_value(top: float, values: List[str], value: str) -> float:
+            if not values:
+                return top + row_h / 2
+            try:
+                idx = values.index(value)
+            except ValueError:
+                idx = 0
+            return point_y_local(top, values, idx)
         max_time = max([end for _, end in schedule.values()], default=3000)
         graph_w = max(1800, int(max_time * time_scale) + 700)
         body_h = max(720, max(1, len(smalls)) * row_h + 20)
@@ -1014,7 +1029,7 @@ class TimingChartView(QGraphicsView):
             first_from = ops_sorted[0].from_value if ops_sorted else ""
             if first_from not in ("", "-"):
                 current_value = first_from
-            current_y = point_y(top, point_values, current_value)
+            current_y = point_y_value(top, point_values, current_value)
             item_color = color_for_small(small_uid)
 
             for op in ops_sorted:
