@@ -1089,20 +1089,27 @@ class TimingChartView(QGraphicsView):
         # dependency arrows as manually dashed black connector lines
         import math
 
-        def draw_manual_dashed_line(x1: float, y1: float, x2: float, y2: float, color: QColor, width: int = 2,
-                                    dash_len: float = 8.0, gap_len: float = 5.0, start_with_solid: float = 0.0):
+        def draw_manual_dashed_line(
+            x1: float, y1: float, x2: float, y2: float,
+            color: QColor, width: int = 2,
+            dash_len: float = 8.0, gap_len: float = 5.0,
+            start_with_solid: float = 0.0,
+        ):
             dx = x2 - x1
             dy = y2 - y1
             length = (dx * dx + dy * dy) ** 0.5
             if length <= 0.001:
                 return
+
             ux = dx / length
             uy = dy / length
+
             pen = QPen(color, width)
             pen.setCapStyle(Qt.FlatCap)
 
-            # draw an explicit solid stub from the source point so the dashed line visibly starts on the dot
             pos = 0.0
+
+            # 始点だけ少し実線にして、ちゃんと始点から出ているように見せる
             if start_with_solid > 0.0:
                 solid_end = min(start_with_solid, length)
                 sx = x1
@@ -1132,38 +1139,56 @@ class TimingChartView(QGraphicsView):
             p1 = op_anchor[op.start_operation_uid][src_key]
             p2 = op_anchor[op.uid]["start"]
 
-            arrow_size = 10
             color = QColor(20, 20, 20)
+            arrow_size = 10
 
-            # mark the true source point so the dependency clearly starts on the timing-chart point
-            scene.addEllipse(p1.x() - 2.5, p1.y() - 2.5, 5, 5, QPen(color), QBrush(color))
+            dx = p2.x() - p1.x()
+            dy = p2.y() - p1.y()
+            length = (dx * dx + dy * dy) ** 0.5
+            if length <= 0.001:
+                continue
 
-            if p2.y() >= p1.y():
-                # destination is below: route above both points, arrow points downward
-                y_route = min(p1.y(), p2.y()) - 34
-                end_y = p2.y() - arrow_size
-                draw_manual_dashed_line(p1.x(), p1.y(), p1.x(), y_route, color, start_with_solid=10.0)
-                draw_manual_dashed_line(p1.x(), y_route, p2.x(), y_route, color)
-                draw_manual_dashed_line(p2.x(), y_route, p2.x(), end_y, color)
+            ux = dx / length
+            uy = dy / length
 
-                arrow = QPolygonF([
-                    p2,
-                    QPointF(p2.x() - arrow_size * math.cos(math.pi / 6), p2.y() - arrow_size * math.sin(math.pi / 6)),
-                    QPointF(p2.x() + arrow_size * math.cos(math.pi / 6), p2.y() - arrow_size * math.sin(math.pi / 6)),
-                ])
-            else:
-                # destination is above: route below both points, arrow points upward
-                y_route = max(p1.y(), p2.y()) + 34
-                end_y = p2.y() + arrow_size
-                draw_manual_dashed_line(p1.x(), p1.y(), p1.x(), y_route, color, start_with_solid=10.0)
-                draw_manual_dashed_line(p1.x(), y_route, p2.x(), y_route, color)
-                draw_manual_dashed_line(p2.x(), y_route, p2.x(), end_y, color)
+            # 矢印の先端ぶん手前で線を止める
+            line_end = QPointF(
+                p2.x() - ux * arrow_size,
+                p2.y() - uy * arrow_size,
+            )
 
-                arrow = QPolygonF([
-                    p2,
-                    QPointF(p2.x() - arrow_size * math.cos(math.pi / 6), p2.y() + arrow_size * math.sin(math.pi / 6)),
-                    QPointF(p2.x() + arrow_size * math.cos(math.pi / 6), p2.y() + arrow_size * math.sin(math.pi / 6)),
-                ])
+            # 始点マーカー
+            scene.addEllipse(
+                p1.x() - 2.5, p1.y() - 2.5, 5, 5,
+                QPen(color), QBrush(color)
+            )
+
+            # 直線の破線
+            draw_manual_dashed_line(
+                p1.x(), p1.y(),
+                line_end.x(), line_end.y(),
+                color,
+                width=2,
+                dash_len=8.0,
+                gap_len=5.0,
+                start_with_solid=10.0,
+            )
+
+            # 矢印（三角形）を線の向きに合わせて回転
+            px = -uy
+            py = ux
+
+            arrow = QPolygonF([
+                p2,
+                QPointF(
+                    line_end.x() + px * (arrow_size * 0.45),
+                    line_end.y() + py * (arrow_size * 0.45),
+                ),
+                QPointF(
+                    line_end.x() - px * (arrow_size * 0.45),
+                    line_end.y() - py * (arrow_size * 0.45),
+                ),
+            ])
 
             arrow_item = QGraphicsPolygonItem(arrow)
             arrow_item.setBrush(QBrush(color))
