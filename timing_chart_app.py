@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGraphicsItem,
     QGraphicsLineItem,
     QGraphicsPathItem,
@@ -589,7 +590,7 @@ class OperationDialog(QDialog):
             self.end_trigger_combo.setCurrentText(operation.end_trigger or "終了")
             self.end_dep_combo.setEditText("" if operation.end_operation_uid is None else str(operation.end_operation_uid))
             self._reload_points()
-            fidx = self.from_combo.findData(operation.from_value)
+            fidx = self.from_combo.findData(operation.from_value if operation.from_value else "-")
             if fidx >= 0:
                 self.from_combo.setCurrentIndex(fidx)
             tidx = self.to_combo.findData(operation.to_value)
@@ -633,12 +634,13 @@ class OperationDialog(QDialog):
         if small_uid is None:
             return
         vals = self.model.point_options_for_small(int(small_uid))
+        self.from_combo.addItem("-", "-")
         for i, val in enumerate(vals, start=1):
             label = f"{i}:{val}"
             self.from_combo.addItem(label, val)
             self.to_combo.addItem(label, val)
+        self.from_combo.setCurrentIndex(0)
         if vals:
-            self.from_combo.setCurrentIndex(0)
             self.to_combo.setCurrentIndex(min(1, len(vals) - 1))
 
     def _refresh_dep_enabled(self):
@@ -775,86 +777,66 @@ class SelectableOpRect(QGraphicsRectItem):
 
 
 class TimingChartView(QGraphicsView):
-    dependency_created = Signal(int, int)  # source_uid, target_uid
+    dependency_created = Signal(int, int)
+    link_status_changed = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setRenderHint(QPainter.Antialiasing, True)
         self.setScene(QGraphicsScene(self))
+        self._header_scene = QGraphicsScene(self)
         self.link_mode = False
         self._pending_source_uid: Optional[int] = None
+        self._layout_info: Dict[str, object] = {}
 
-        self.setMinimumSize(1500, 820)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
+        self.setMinimumSize(900, 700)
 
     def set_link_mode(self, enabled: bool):
         self.link_mode = enabled
         self._pending_source_uid = None
+        self._emit_link_status()
+
+    def clear_pending_selection(self):
+        self._pending_source_uid = None
+        self._emit_link_status()
+
+    def _emit_link_status(self):
+        if not self.link_mode:
+            self.link_status_changed.emit("リンクモードOFF")
+        elif self._pending_source_uid is None:
+            self.link_status_changed.emit("リンクモードON: 始点の動作をクリック")
+        else:
+            self.link_status_changed.emit(f"リンクモードON: 終点の動作をクリック (始点 OP{self._pending_source_uid})")
 
     def _on_operation_clicked(self, operation_uid: int):
         if not self.link_mode:
             return
         if self._pending_source_uid is None:
             self._pending_source_uid = operation_uid
-        else:
-            if self._pending_source_uid != operation_uid:
-                self.dependency_created.emit(self._pending_source_uid, operation_uid)
-            self._pending_source_uid = None
-
-    def render_chart(self, model: AppModel):
-        scene = self.scene()
-        scene.clear()
-
-        schedule, errors = calculate_schedule(model)
-        if errors:
-            y = 24
-            scene.setSceneRect(0, 0, 1800, 900)
-            scene.addRect(0, 0, 1800, 900, QPen(QColor(210, 215, 220)), QBrush(QColor(250, 251, 252)))
-            title = scene.addSimpleText("ERROR")
-            title.setPos(20, y)
-            y += 34
-            for e in errors:
-                txt = scene.addSimpleText(f"- {e}")
-                txt.setPos(20, y)
-                y += 24
-            hint = scene.addSimpleText("Ctrl+Z で元に戻す / Ctrl+Y でやり直し")
-            hint.setPos(20, y + 12)
+            self._emit_link_status()
             return
+        if self._pending_source_uid != operation_uid:
+            self.dependency_created.emit(self._pending_source_uid, operation_uid)
+        self._pending_source_uid = None
+        self._emit_link_status()
 
-        row_h = 108
-        header_h = 76
+    def left_layout(self) -> Dict[str, int]:
+        return {
+            "col_large": 90,
+            "col_middle": 120,
+            "col_small": 200,
+            "col_points": 160,
+            "row_h": 108,
+            "header_h": 56,
+        }
 
-        col_large = 90
-        col_middle = 120
-        col_small = 200
-        col_points = 150
-        left_w = col_large + col_middle + col_small + col_points
-
-        time_scale = 0.16
-        max_time = max([end for _, end in schedule.values()], default=3000)
-        graph_w = max(1800, int(max_time * time_scale) + 500)
-        total_w = left_w + graph_w
-        total_h = max(920, header_h + max(1, len(model.small_items())) * row_h + 120)
-        scene.setSceneRect(0, 0, total_w, total_h)
-
-        # Region backgrounds
-        scene.addRect(0, 0, left_w, total_h, QPen(QColor(205, 210, 216)), QBrush(QColor(245, 247, 249)))
-        scene.addRect(left_w, 0, graph_w, total_h, QPen(QColor(210, 214, 220)), QBrush(QColor(255, 255, 255)))
-        scene.addRect(0, 0, total_w, header_h, QPen(QColor(200, 205, 212)), QBrush(QColor(236, 240, 244)))
-
-        x_large = col_large
-        x_middle = col_large + col_middle
-        x_small = col_large + col_middle + col_small
-        scene.addLine(x_large, 0, x_large, total_h, QPen(QColor(210, 214, 220), 1))
-        scene.addLine(x_middle, 0, x_middle, total_h, QPen(QColor(210, 214, 220), 1))
-        scene.addLine(x_small, 0, x_small, total_h, QPen(QColor(210, 214, 220), 1))
-        scene.addLine(left_w, 0, left_w, total_h, QPen(QColor(110, 120, 135), 2))
-
-        smalls = sorted(
+    def ordered_smalls(self, model: AppModel) -> List[HierarchyItem]:
+        return sorted(
             model.small_items(),
             key=lambda x: (
                 (model.get_large_for_small(x.uid).id_number if model.get_large_for_small(x.uid) else 0),
@@ -863,124 +845,142 @@ class TimingChartView(QGraphicsView):
                 x.uid,
             ),
         )
-        row_map = {s.uid: i for i, s in enumerate(smalls)}
 
-        # Header labels
-        scene.addSimpleText("大項目").setPos(12, 18)
-        scene.addSimpleText("中項目").setPos(col_large + 12, 18)
-        scene.addSimpleText("小項目").setPos(col_large + col_middle + 12, 18)
-        scene.addSimpleText("ポイント").setPos(col_large + col_middle + col_small + 12, 18)
-
-        # Left rows / labels
-        prev_large_uid = None
-        prev_middle_uid = None
-        large_group_start_top = None
-        middle_group_start_top = None
-        current_large_fill = None
-        current_middle_fill = None
-
-        def group_fill(index: int):
-            return QColor(250, 251, 252) if index % 2 == 0 else QColor(243, 246, 248)
-
-        for s in smalls:
-            row = row_map[s.uid]
-            top = header_h + row * row_h
-            graph_bg = QColor(252, 253, 254) if row % 2 == 0 else QColor(248, 250, 252)
-            scene.addRect(left_w, top, graph_w, row_h, QPen(QColor(232, 236, 240)), QBrush(graph_bg))
-            scene.addLine(left_w, top + row_h, total_w, top + row_h, QPen(QColor(224, 228, 233), 1))
-
+    def populate_left_table(self, model: AppModel, table: QTableWidget):
+        cfg = self.left_layout()
+        smalls = self.ordered_smalls(model)
+        row_h = cfg["row_h"]
+        table.clearContents()
+        table.setRowCount(len(smalls))
+        table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(["大項目", "中項目", "小項目", "ポイント"])
+        table.setColumnWidth(0, cfg["col_large"])
+        table.setColumnWidth(1, cfg["col_middle"])
+        table.setColumnWidth(2, cfg["col_small"])
+        table.setColumnWidth(3, cfg["col_points"])
+        table.clearSpans()
+        table.setWordWrap(True)
+        for r, s in enumerate(smalls):
+            table.setRowHeight(r, row_h)
             large = model.get_large_for_small(s.uid)
             middle = model.get_middle_for_small(s.uid)
+            points = model.point_options_for_small(s.uid)
+            items = [
+                QTableWidgetItem(f"{large.id_number} {large.name}" if large else ""),
+                QTableWidgetItem(f"{middle.id_number} {middle.name}" if middle else ""),
+                QTableWidgetItem(f"{s.id_number} {s.name}"),
+                QTableWidgetItem("\n".join([f"{i+1}:{p}" for i, p in enumerate(points)])),
+            ]
+            for c, item in enumerate(items):
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                item.setTextAlignment(Qt.AlignLeft | Qt.AlignTop)
+                if c < 2:
+                    item.setBackground(QBrush(QColor(255, 255, 255)))
+                else:
+                    bg = QColor(250, 251, 252) if r % 2 == 0 else QColor(243, 246, 248)
+                    item.setBackground(QBrush(bg))
+                table.setItem(r, c, item)
 
-            if prev_middle_uid is not None and (middle is None or middle.uid != prev_middle_uid):
-                scene.addRect(
-                    col_large, middle_group_start_top, col_middle, top - middle_group_start_top,
-                    QPen(QColor(210, 214, 220), 1), QBrush(current_middle_fill)
-                )
-                prev_middle = model.get_hierarchy(prev_middle_uid)
-                if prev_middle:
-                    scene.addSimpleText(f"{prev_middle.id_number} {prev_middle.name}").setPos(col_large + 10, middle_group_start_top + 14)
+        # merge large/middle repeated cells
+        r = 0
+        while r < len(smalls):
+            large = model.get_large_for_small(smalls[r].uid)
+            span = 1
+            while r + span < len(smalls) and model.get_large_for_small(smalls[r + span].uid) and large and model.get_large_for_small(smalls[r + span].uid).uid == large.uid:
+                span += 1
+            if span > 1:
+                table.setSpan(r, 0, span, 1)
+            r += span
 
-            if prev_large_uid is not None and (large is None or large.uid != prev_large_uid):
-                scene.addRect(
-                    0, large_group_start_top, col_large, top - large_group_start_top,
-                    QPen(QColor(210, 214, 220), 1), QBrush(current_large_fill)
-                )
-                prev_large = model.get_hierarchy(prev_large_uid)
-                if prev_large:
-                    scene.addSimpleText(f"{prev_large.id_number} {prev_large.name}").setPos(10, large_group_start_top + 14)
+        r = 0
+        while r < len(smalls):
+            middle = model.get_middle_for_small(smalls[r].uid)
+            span = 1
+            while r + span < len(smalls) and model.get_middle_for_small(smalls[r + span].uid) and middle and model.get_middle_for_small(smalls[r + span].uid).uid == middle.uid:
+                span += 1
+            if span > 1:
+                table.setSpan(r, 1, span, 1)
+            r += span
 
-            if large and large.uid != prev_large_uid:
-                large_group_start_top = top
-                current_large_fill = group_fill(row)
-
-            if middle and middle.uid != prev_middle_uid:
-                middle_group_start_top = top
-                current_middle_fill = group_fill(row)
-
-            small_fill = group_fill(row)
-            scene.addRect(col_large + col_middle, top, col_small, row_h, QPen(QColor(220, 225, 230)), QBrush(small_fill))
-            scene.addRect(col_large + col_middle + col_small, top, col_points, row_h, QPen(QColor(220, 225, 230)), QBrush(small_fill))
-            scene.addLine(x_small, top, x_small, top + row_h, QPen(QColor(210, 214, 220), 1))
-            scene.addLine(left_w, top, left_w, top + row_h, QPen(QColor(110, 120, 135), 2))
-            scene.addSimpleText(f"{s.id_number} {s.name}").setPos(col_large + col_middle + 10, top + 14)
-
-            point_values = model.point_options_for_small(s.uid)
-            n = max(1, len(point_values) - 1)
-            for i, p in enumerate(point_values):
-                py = top + 18 + (row_h - 36) * (i / max(1, n))
-                scene.addSimpleText(f"{i+1}:{p}").setPos(col_large + col_middle + col_small + 10, py - 8)
-
-            prev_large_uid = large.uid if large else None
-            prev_middle_uid = middle.uid if middle else None
-
-        body_bottom = header_h + len(smalls) * row_h
-        if prev_middle_uid is not None and middle_group_start_top is not None:
-            prev_middle = model.get_hierarchy(prev_middle_uid)
-            scene.addRect(
-                col_large, middle_group_start_top, col_middle, body_bottom - middle_group_start_top,
-                QPen(QColor(210, 214, 220), 1), QBrush(current_middle_fill)
-            )
-            if prev_middle:
-                scene.addSimpleText(f"{prev_middle.id_number} {prev_middle.name}").setPos(col_large + 10, middle_group_start_top + 14)
-
-        if prev_large_uid is not None and large_group_start_top is not None:
-            prev_large = model.get_hierarchy(prev_large_uid)
-            scene.addRect(
-                0, large_group_start_top, col_large, body_bottom - large_group_start_top,
-                QPen(QColor(210, 214, 220), 1), QBrush(current_large_fill)
-            )
-            if prev_large:
-                scene.addSimpleText(f"{prev_large.id_number} {prev_large.name}").setPos(10, large_group_start_top + 14)
-
-        # redraw persistent separators
-        scene.addLine(x_large, 0, x_large, header_h, QPen(QColor(210, 214, 220), 1))
-        scene.addLine(x_middle, 0, x_middle, header_h, QPen(QColor(210, 214, 220), 1))
-        scene.addLine(x_small, 0, x_small, total_h, QPen(QColor(210, 214, 220), 1))
-
-        # Time ruler and grid
+    def render_header(self, model: AppModel):
+        scene = self._header_scene
+        scene.clear()
+        cfg = self.left_layout()
+        header_h = cfg["header_h"]
+        time_scale = 0.16
+        schedule, _ = calculate_schedule(model)
+        max_time = max([end for _, end in schedule.values()], default=3000)
+        graph_w = max(1800, int(max_time * time_scale) + 700)
+        scene.setSceneRect(0, 0, graph_w, header_h)
+        scene.addRect(0, 0, graph_w, header_h, QPen(QColor(200, 205, 212)), QBrush(QColor(236, 240, 244)))
         minor_step = 100
         major_step = 500
         t = 0
         while t <= max_time + 1500:
-            x = left_w + t * time_scale
+            x = t * time_scale
             if t % major_step == 0:
-                pen = QPen(QColor(186, 191, 198), 1)
-                scene.addLine(x, header_h, x, total_h - 28, pen)
-                txt = scene.addSimpleText(f"{t} ms")
-                txt.setPos(x + 4, 8)
+                scene.addSimpleText(f"{t} ms").setPos(x + 4, 8)
                 tick_h = 18
             else:
-                pen = QPen(QColor(222, 226, 231), 1)
-                pen.setStyle(Qt.DotLine)
-                scene.addLine(x, header_h, x, total_h - 28, pen)
                 tick_h = 10
             scene.addLine(x, header_h - tick_h, x, header_h, QPen(QColor(150, 156, 165), 1))
             t += minor_step
 
-        op_anchor: Dict[int, Dict[str, QPointF]] = {}
+    def render_chart(self, model: AppModel):
+        scene = self.scene()
+        scene.clear()
+        self.render_header(model)
 
-        def point_y(top: float, values: List[str], value: str) -> float:
+        schedule, errors = calculate_schedule(model)
+        if errors:
+            scene.setSceneRect(0, 0, 1800, 800)
+            y = 24
+            title = scene.addSimpleText("ERROR")
+            title.setPos(20, y)
+            y += 34
+            for e in errors:
+                txt = scene.addSimpleText(f"- {e}")
+                txt.setPos(20, y)
+                y += 24
+            self._layout_info = {"graph_w": 1800, "body_h": 800}
+            return
+
+        cfg = self.left_layout()
+        row_h = cfg["row_h"]
+        time_scale = 0.16
+        smalls = self.ordered_smalls(model)
+        row_map = {s.uid: i for i, s in enumerate(smalls)}
+        max_time = max([end for _, end in schedule.values()], default=3000)
+        graph_w = max(1800, int(max_time * time_scale) + 700)
+        body_h = max(720, max(1, len(smalls)) * row_h + 20)
+        scene.setSceneRect(0, 0, graph_w, body_h)
+        self._layout_info = {"graph_w": graph_w, "body_h": body_h}
+
+        # row backgrounds
+        for r, s in enumerate(smalls):
+            top = r * row_h
+            graph_bg = QColor(252, 253, 254) if r % 2 == 0 else QColor(248, 250, 252)
+            scene.addRect(0, top, graph_w, row_h, QPen(QColor(232, 236, 240)), QBrush(graph_bg))
+            scene.addLine(0, top + row_h, graph_w, top + row_h, QPen(QColor(224, 228, 233), 1))
+
+        # time grid
+        minor_step = 100
+        major_step = 500
+        t = 0
+        while t <= max_time + 1500:
+            x = t * time_scale
+            if t % major_step == 0:
+                pen = QPen(QColor(186, 191, 198), 1)
+                scene.addLine(x, 0, x, body_h, pen)
+            else:
+                pen = QPen(QColor(222, 226, 231), 1)
+                pen.setStyle(Qt.DotLine)
+                scene.addLine(x, 0, x, body_h, pen)
+            t += minor_step
+
+        def point_y(top: float, values: List[str], value: str, fallback_y: Optional[float] = None) -> float:
+            if value in ("", "-", None):
+                return fallback_y if fallback_y is not None else top + row_h / 2
             if not values:
                 return top + row_h / 2
             index_map = {p: i for i, p in enumerate(values)}
@@ -988,145 +988,95 @@ class TimingChartView(QGraphicsView):
             idx = index_map.get(value, 0)
             return top + 18 + (row_h - 36) * (idx / max(1, n))
 
-        # draw state timelines by small item so inactive periods are also connected
-        timeline_end = max_time + 1200
-
-        palette = [
-            QColor(45, 92, 191),
-            QColor(28, 124, 84),
-            QColor(180, 90, 40),
-            QColor(120, 70, 170),
-            QColor(160, 60, 120),
-            QColor(60, 140, 150),
-        ]
-
+        palette = [QColor(45, 92, 191), QColor(28, 124, 84), QColor(180, 90, 40), QColor(120, 70, 170), QColor(160, 60, 120), QColor(60, 140, 150)]
+        ordered_small_ids = [x.uid for x in smalls]
         def color_for_small(small_uid: int) -> QColor:
-            ordered = sorted([x.uid for x in model.small_items()])
-            idx = ordered.index(small_uid) if small_uid in ordered else 0
+            idx = ordered_small_ids.index(small_uid) if small_uid in ordered_small_ids else 0
             return palette[idx % len(palette)]
 
+        op_anchor: Dict[int, Dict[str, QPointF]] = {}
+        timeline_end = max_time + 1200
         ops_by_small: Dict[int, List[OperationInstance]] = {}
         for op in model.operations:
             action_def = model.get_action_def(op.action_uid)
-            if not action_def:
-                continue
-            ops_by_small.setdefault(action_def.small_item_uid, []).append(op)
+            if action_def:
+                ops_by_small.setdefault(action_def.small_item_uid, []).append(op)
 
         for small_uid, ops_for_small in ops_by_small.items():
             row = row_map.get(small_uid)
             if row is None:
                 continue
-            top = header_h + row * row_h
+            top = row * row_h
             point_values = model.point_options_for_small(small_uid)
             ops_sorted = sorted(ops_for_small, key=lambda o: (schedule.get(o.uid, (0, 0))[0], o.uid))
-
             current_time = 0
-            current_value = ops_sorted[0].from_value if ops_sorted else (point_values[0] if point_values else "")
+            current_value = point_values[0] if point_values else ""
+            first_from = ops_sorted[0].from_value if ops_sorted else ""
+            if first_from not in ("", "-"):
+                current_value = first_from
             current_y = point_y(top, point_values, current_value)
+            item_color = color_for_small(small_uid)
 
             for op in ops_sorted:
                 start_time, end_time = schedule.get(op.uid, (0, 0))
-                x1 = left_w + start_time * time_scale
-                x2 = left_w + end_time * time_scale
-                y1 = point_y(top, point_values, op.from_value)
-                y2 = point_y(top, point_values, op.to_value)
-
-                # hold previous state until this operation begins
-                hold_x1 = left_w + current_time * time_scale
+                x1 = start_time * time_scale
+                x2 = end_time * time_scale
+                y_from = point_y(top, point_values, op.from_value, fallback_y=current_y)
+                y_to = point_y(top, point_values, op.to_value, fallback_y=y_from)
+                hold_x1 = current_time * time_scale
                 hold_x2 = x1
-                item_color = color_for_small(small_uid)
                 if hold_x2 > hold_x1:
-                    hold_pen = QPen(item_color, 3)
-                    scene.addLine(hold_x1, current_y, hold_x2, current_y, hold_pen)
+                    scene.addLine(hold_x1, current_y, hold_x2, current_y, QPen(item_color, 3))
 
-                # transition during the operation
                 small_item = model.get_hierarchy(small_uid)
                 if small_item and small_item.action_type == "onoff":
-                    trans_pen = QPen(item_color, 3)
-                    if y1 != current_y:
-                        scene.addLine(x1, current_y, x1, y1, trans_pen)
-                    if y1 != y2:
-                        scene.addLine(x1, y1, x1, y2, trans_pen)
-                        scene.addLine(x1, y2, x2, y2, trans_pen)
-                    else:
-                        scene.addLine(x1, y1, x2, y2, trans_pen)
+                    if current_y != y_from:
+                        scene.addLine(x1, current_y, x1, y_from, QPen(item_color, 3))
+                    scene.addLine(x1, y_from, x2, y_from, QPen(item_color, 3))
+                    if y_to != y_from:
+                        scene.addLine(x2, y_from, x2, y_to, QPen(item_color, 3))
+                    anchor_start_y = y_from
+                    anchor_end_y = y_to
                 else:
-                    trans_pen = QPen(item_color, 3)
-                    if y1 != current_y:
-                        scene.addLine(x1, current_y, x1, y1, trans_pen)
-                    scene.addLine(x1, y1, x2, y2, trans_pen)
+                    if current_y != y_from:
+                        scene.addLine(x1, current_y, x1, y_from, QPen(item_color, 3))
+                    scene.addLine(x1, y_from, x2, y_to, QPen(item_color, 3))
+                    anchor_start_y = y_from
+                    anchor_end_y = y_to
 
-                hit_rect = QRectF(min(x1, x2) - 8, min(current_y, y1, y2) - 12, max(24, abs(x2 - x1) + 16), max(current_y, y1, y2) - min(current_y, y1, y2) + 24)
+                hit_rect = QRectF(min(x1, x2) - 8, min(current_y, y_from, y_to) - 12, max(24, abs(x2 - x1) + 16), max(current_y, y_from, y_to) - min(current_y, y_from, y_to) + 24)
                 hit = SelectableOpRect(hit_rect, op.uid, self._on_operation_clicked)
                 hit.setBrush(QBrush(QColor(0, 0, 0, 1)))
                 hit.setPen(QPen(QColor(0, 0, 0, 0)))
                 scene.addItem(hit)
-
                 caption = scene.addSimpleText(f"OP{op.uid}")
                 caption.setPos(x1 + 6, top + 8)
-                op_anchor[op.uid] = {"start": QPointF(x1, y1), "end": QPointF(x2, y2)}
-
+                op_anchor[op.uid] = {"start": QPointF(x1, anchor_start_y), "end": QPointF(x2, anchor_end_y)}
                 current_time = end_time
-                current_value = op.to_value
-                current_y = y2
+                current_y = y_to
+                current_value = op.to_value if op.to_value not in ("", "-") else current_value
 
-            # tail after the last operation
-            tail_x1 = left_w + current_time * time_scale
-            tail_x2 = left_w + timeline_end * time_scale
+            tail_x1 = current_time * time_scale
+            tail_x2 = timeline_end * time_scale
             if tail_x2 > tail_x1:
-                tail_pen = QPen(color_for_small(small_uid), 3)
-                scene.addLine(tail_x1, current_y, tail_x2, current_y, tail_pen)
+                scene.addLine(tail_x1, current_y, tail_x2, current_y, QPen(item_color, 3))
 
-        # left edge ticks for each point row
-        for s in smalls:
-            row = row_map[s.uid]
-            top = header_h + row * row_h
-            point_values = model.point_options_for_small(s.uid)
-            for p in point_values:
-                py = point_y(top, point_values, p)
-                scene.addLine(left_w - 8, py, left_w, py, QPen(QColor(140, 140, 140)))
-
-        # dependency arrows as manually dashed black connector lines
+        # dependency arrows
         import math
-
-        def draw_manual_dashed_line(
-            x1: float, y1: float, x2: float, y2: float,
-            color: QColor, width: int = 2,
-            dash_len: float = 8.0, gap_len: float = 5.0,
-            start_with_solid: float = 0.0,
-        ):
+        def draw_manual_dashed_line(x1: float, y1: float, x2: float, y2: float, color: QColor, width: int = 2, dash_len: float = 8.0, gap_len: float = 5.0):
             dx = x2 - x1
             dy = y2 - y1
             length = (dx * dx + dy * dy) ** 0.5
             if length <= 0.001:
                 return
-
             ux = dx / length
             uy = dy / length
-
+            pos = 0.0
             pen = QPen(color, width)
             pen.setCapStyle(Qt.FlatCap)
-
-            pos = 0.0
-
-            # 始点だけ少し実線にして、ちゃんと始点から出ているように見せる
-            if start_with_solid > 0.0:
-                solid_end = min(start_with_solid, length)
-                sx = x1
-                sy = y1
-                ex = x1 + ux * solid_end
-                ey = y1 + uy * solid_end
-                scene.addLine(sx, sy, ex, ey, pen)
-                pos = solid_end
-
             while pos < length:
-                seg_start = pos
                 seg_end = min(pos + dash_len, length)
-                sx = x1 + ux * seg_start
-                sy = y1 + uy * seg_start
-                ex = x1 + ux * seg_end
-                ey = y1 + uy * seg_end
-                scene.addLine(sx, sy, ex, ey, pen)
+                scene.addLine(x1 + ux * pos, y1 + uy * pos, x1 + ux * seg_end, y1 + uy * seg_end, pen)
                 pos += dash_len + gap_len
 
         for op in model.operations:
@@ -1134,66 +1084,32 @@ class TimingChartView(QGraphicsView):
                 continue
             if op.start_operation_uid not in op_anchor or op.uid not in op_anchor:
                 continue
-
             src_key = "end" if op.start_trigger == "終了" else "start"
             p1 = op_anchor[op.start_operation_uid][src_key]
             p2 = op_anchor[op.uid]["start"]
-
             color = QColor(20, 20, 20)
             arrow_size = 10
-
-            dx = p2.x() - p1.x()
-            dy = p2.y() - p1.y()
-            length = (dx * dx + dy * dy) ** 0.5
-            if length <= 0.001:
-                continue
-
-            ux = dx / length
-            uy = dy / length
-
-            # 矢印の先端ぶん手前で線を止める
-            line_end = QPointF(
-                p2.x() - ux * arrow_size,
-                p2.y() - uy * arrow_size,
-            )
-
-            # 始点マーカー
-            scene.addEllipse(
-                p1.x() - 2.5, p1.y() - 2.5, 5, 5,
-                QPen(color), QBrush(color)
-            )
-
-            # 直線の破線
-            draw_manual_dashed_line(
-                p1.x(), p1.y(),
-                line_end.x(), line_end.y(),
-                color,
-                width=2,
-                dash_len=8.0,
-                gap_len=5.0,
-                start_with_solid=10.0,
-            )
-
-            # 矢印（三角形）を線の向きに合わせて回転
-            px = -uy
-            py = ux
-
-            arrow = QPolygonF([
-                p2,
-                QPointF(
-                    line_end.x() + px * (arrow_size * 0.45),
-                    line_end.y() + py * (arrow_size * 0.45),
-                ),
-                QPointF(
-                    line_end.x() - px * (arrow_size * 0.45),
-                    line_end.y() - py * (arrow_size * 0.45),
-                ),
-            ])
-
+            scene.addEllipse(p1.x() - 2.5, p1.y() - 2.5, 5, 5, QPen(color), QBrush(color))
+            if p2.y() >= p1.y():
+                y_route = min(p1.y(), p2.y()) - 34
+                end_y = p2.y() - arrow_size
+                draw_manual_dashed_line(p1.x(), p1.y(), p1.x(), y_route, color)
+                draw_manual_dashed_line(p1.x(), y_route, p2.x(), y_route, color)
+                draw_manual_dashed_line(p2.x(), y_route, p2.x(), end_y, color)
+                arrow = QPolygonF([p2, QPointF(p2.x() - arrow_size * math.cos(math.pi / 6), p2.y() - arrow_size * math.sin(math.pi / 6)), QPointF(p2.x() + arrow_size * math.cos(math.pi / 6), p2.y() - arrow_size * math.sin(math.pi / 6))])
+            else:
+                y_route = max(p1.y(), p2.y()) + 34
+                end_y = p2.y() + arrow_size
+                draw_manual_dashed_line(p1.x(), p1.y(), p1.x(), y_route, color)
+                draw_manual_dashed_line(p1.x(), y_route, p2.x(), y_route, color)
+                draw_manual_dashed_line(p2.x(), y_route, p2.x(), end_y, color)
+                arrow = QPolygonF([p2, QPointF(p2.x() - arrow_size * math.cos(math.pi / 6), p2.y() + arrow_size * math.sin(math.pi / 6)), QPointF(p2.x() + arrow_size * math.cos(math.pi / 6), p2.y() + arrow_size * math.sin(math.pi / 6))])
             arrow_item = QGraphicsPolygonItem(arrow)
             arrow_item.setBrush(QBrush(color))
             arrow_item.setPen(QPen(color))
             scene.addItem(arrow_item)
+
+        self._emit_link_status()
 
 
 class ClearSelectionTreeWidget(QTreeWidget):
@@ -1528,10 +1444,29 @@ class OperationsTab(QWidget):
         self.model = model
 
         layout = QVBoxLayout(self)
+
+        self.group_table = QTableWidget(1, 13)
+        self.group_table.verticalHeader().setVisible(False)
+        self.group_table.horizontalHeader().setVisible(False)
+        self.group_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.group_table.setFocusPolicy(Qt.NoFocus)
+        self.group_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.group_table.setFixedHeight(32)
+        self.group_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.group_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.group_table.setSpan(0, 0, 1, 5)
+        self.group_table.setSpan(0, 5, 1, 3)
+        self.group_table.setSpan(0, 8, 1, 5)
+        for col, text_ in [(0, "項目"), (5, "開始設定"), (8, "終了設定")]:
+            item = QTableWidgetItem(text_)
+            item.setTextAlignment(Qt.AlignCenter)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            self.group_table.setItem(0, col, item)
+        layout.addWidget(self.group_table)
+
         self.table = QTableWidget(0, 13)
         self.table.setHorizontalHeaderLabels([
-            "No", "動作UID", "大項目", "中項目", "小項目", "開始ポイント", "終了ポイント",
-            "開始トリガ", "開始依存元動作UID", "終了設定", "終了トリガ", "終了依存元動作UID", "時間(ms)"
+            "No", "動作UID", "大項目", "中項目", "小項目", "開始ポイント", "開始トリガ", "開始依存元UID", "終了ポイント", "終了設定", "終了トリガ", "終了依存元UID", "時間(ms)"
         ])
         for i in range(13):
             self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.Interactive)
@@ -1559,9 +1494,15 @@ class OperationsTab(QWidget):
         self.del_btn.clicked.connect(self.delete_operation)
         self.refresh_btn.clicked.connect(self.refresh)
         self.table.itemDoubleClicked.connect(lambda _: self.edit_operation())
-        self.table.horizontalHeader().sortIndicatorChanged.connect(lambda *_: self._renumber_no_column())
+        self.table.horizontalHeader().sectionResized.connect(self._sync_group_widths)
+        self.table.horizontalScrollBar().valueChanged.connect(self.group_table.horizontalScrollBar().setValue)
+        self.group_table.horizontalScrollBar().valueChanged.connect(self.table.horizontalScrollBar().setValue)
 
         self.refresh()
+
+    def _sync_group_widths(self, *args):
+        for i in range(self.table.columnCount()):
+            self.group_table.setColumnWidth(i, self.table.columnWidth(i))
 
     def refresh(self):
         current_uid = self._selected_operation_uid()
@@ -1575,8 +1516,8 @@ class OperationsTab(QWidget):
             point_options = self.model.point_options_for_small(action.small_item_uid) if action else []
 
             def point_label(value: str) -> str:
-                if not value:
-                    return ""
+                if not value or value == '-':
+                    return '-'
                 try:
                     idx = point_options.index(value) + 1
                     return f"{idx}:{value}"
@@ -1589,42 +1530,24 @@ class OperationsTab(QWidget):
                 f"{large.id_number} {large.name}" if large else "",
                 f"{middle.id_number} {middle.name}" if middle else "",
                 f"{small.id_number} {small.name}" if small else "",
-                point_label(op.from_value),
-                point_label(op.to_value),
+                point_label(op.from_value if op.from_value else '-'),
                 op.start_trigger,
                 "-" if op.start_operation_uid is None else str(op.start_operation_uid),
+                point_label(op.to_value),
                 op.end_mode,
                 op.end_trigger if op.end_mode == "トリガ指定" else "-",
                 "-" if op.end_operation_uid is None else str(op.end_operation_uid),
                 str(op.duration_ms),
             ]
             for c, v in enumerate(vals):
-                numeric_cols = {0, 1, 8, 11, 12}
-                item = NumericTableWidgetItem(v) if c in numeric_cols and v not in ("", "-") else QTableWidgetItem(v)
+                item = NumericTableWidgetItem(v) if c in {0,1,7,11,12} and v not in ('', '-') else QTableWidgetItem(v)
                 item.setData(Qt.UserRole, op.uid)
                 self.table.setItem(r, c, item)
 
         self.table.setSortingEnabled(True)
-        self.table.sortItems(1, Qt.AscendingOrder)
-        self._renumber_no_column()
         if current_uid is not None:
             self._select_operation_uid(current_uid)
-
-    def _renumber_no_column(self):
-        for r in range(self.table.rowCount()):
-            item = self.table.item(r, 0)
-            if item is None:
-                item = NumericTableWidgetItem(str(r + 1))
-                self.table.setItem(r, 0, item)
-            else:
-                item.setText(str(r + 1))
-
-    def _select_operation_uid(self, op_uid: int):
-        for r in range(self.table.rowCount()):
-            item = self.table.item(r, 1)
-            if item and item.data(Qt.UserRole) == op_uid:
-                self.table.selectRow(r)
-                break
+        self._sync_group_widths()
 
     def _selected_operation_uid(self) -> Optional[int]:
         row = self.table.currentRow()
@@ -1632,6 +1555,13 @@ class OperationsTab(QWidget):
             return None
         item = self.table.item(row, 1)
         return item.data(Qt.UserRole) if item else None
+
+    def _select_operation_uid(self, op_uid: int):
+        for r in range(self.table.rowCount()):
+            item = self.table.item(r, 1)
+            if item and item.data(Qt.UserRole) == op_uid:
+                self.table.selectRow(r)
+                break
 
     def _uid_exists(self, uid: int, exclude_uid: Optional[int] = None) -> bool:
         return any(op.uid == uid and op.uid != exclude_uid for op in self.model.operations)
@@ -1647,7 +1577,6 @@ class OperationsTab(QWidget):
         if not self.model.small_items():
             QMessageBox.warning(self, "項目不足", "先に機器一覧で小項目とポイントを設定してください。")
             return
-
         selected_uid = self._selected_operation_uid()
         dlg = OperationDialog(self.model, parent=self, default_uid=self._unused_operation_uid())
         if dlg.exec():
@@ -1662,29 +1591,13 @@ class OperationsTab(QWidget):
             if self._uid_exists(value["uid"]):
                 QMessageBox.warning(self, "UID重複", f"動作UID {value['uid']} はすでに存在します。")
                 return
-
             self.model_about_to_change.emit("動作追加")
-            new_op = OperationInstance(
-                uid=value["uid"],
-                action_uid=value["action_uid"],
-                operation_mode=value["operation_mode"],
-                time_mode=value["time_mode"],
-                duration_ms=value["duration_ms"],
-                start_trigger=value["start_trigger"],
-                start_operation_uid=value["start_operation_uid"],
-                end_mode=value["end_mode"],
-                end_trigger=value["end_trigger"],
-                end_operation_uid=value["end_operation_uid"],
-                from_value=value["from_value"],
-                to_value=value["to_value"],
-            )
-
+            new_op = OperationInstance(uid=value["uid"], action_uid=value["action_uid"], operation_mode=value["operation_mode"], time_mode=value["time_mode"], duration_ms=value["duration_ms"], start_trigger=value["start_trigger"], start_operation_uid=value["start_operation_uid"], end_mode=value["end_mode"], end_trigger=value["end_trigger"], end_operation_uid=value["end_operation_uid"], from_value=value["from_value"], to_value=value["to_value"])
             if selected_uid is None:
                 self.model.operations.append(new_op)
             else:
                 insert_idx = next((i for i, op in enumerate(self.model.operations) if op.uid == selected_uid), len(self.model.operations))
                 self.model.operations.insert(insert_idx + 1, new_op)
-
             self.refresh()
             self.model_changed.emit()
 
@@ -1705,22 +1618,10 @@ class OperationsTab(QWidget):
             if self._uid_exists(value["uid"], exclude_uid=op.uid):
                 QMessageBox.warning(self, "UID重複", f"動作UID {value['uid']} はすでに存在します。")
                 return
-
             self.model_about_to_change.emit("動作編集")
             old_uid = op.uid
-            op.uid = value["uid"]
-            op.action_uid = value["action_uid"]
-            op.operation_mode = value["operation_mode"]
-            op.time_mode = value["time_mode"]
-            op.duration_ms = value["duration_ms"]
-            op.start_trigger = value["start_trigger"]
-            op.start_operation_uid = value["start_operation_uid"]
-            op.end_mode = value["end_mode"]
-            op.end_trigger = value["end_trigger"]
-            op.end_operation_uid = value["end_operation_uid"]
-            op.from_value = value["from_value"]
-            op.to_value = value["to_value"]
-
+            for k in ["uid","action_uid","operation_mode","time_mode","duration_ms","start_trigger","start_operation_uid","end_mode","end_trigger","end_operation_uid","from_value","to_value"]:
+                setattr(op, k, value[k])
             for other in self.model.operations:
                 if other is op:
                     continue
@@ -1728,7 +1629,6 @@ class OperationsTab(QWidget):
                     other.start_operation_uid = op.uid
                 if other.end_operation_uid == old_uid:
                     other.end_operation_uid = op.uid
-
             self.refresh()
             self.model_changed.emit()
 
@@ -1763,22 +1663,59 @@ class ChartTab(QWidget):
         self.link_toggle = QPushButton("依存関係リンクモード: OFF")
         self.link_toggle.setCheckable(True)
         self.redraw_btn = QPushButton("チャート再描画")
-        self.info_label = QLabel("リンクモードON時: 先に元の動作、次に先の動作をクリック")
+        self.info_label = QLabel("リンクモードOFF")
         top_row.addWidget(self.link_toggle)
         top_row.addWidget(self.redraw_btn)
         top_row.addWidget(self.info_label)
         top_row.addStretch()
         layout.addLayout(top_row)
 
+        self.left_table = QTableWidget(0, 4)
+        self.left_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.left_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.left_table.verticalHeader().setVisible(False)
+        self.left_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.left_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.left_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.left_table.setFocusPolicy(Qt.NoFocus)
+        self.left_table.setAlternatingRowColors(False)
+        self.left_table.setMinimumWidth(570)
+
+        self.header_view = QGraphicsView()
+        self.header_view.setScene(QGraphicsScene(self.header_view))
+        self.header_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.header_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.header_view.setFixedHeight(70)
+        self.header_view.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.header_view.setFrameShape(QGraphicsView.NoFrame)
+
         self.chart = TimingChartView()
-        self.chart.setMinimumHeight(820)
-        layout.addWidget(self.chart, 1)
+        self.chart.setMinimumHeight(760)
+
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(0)
+        grid.addWidget(self.left_table, 1, 0)
+        grid.addWidget(self.header_view, 0, 1)
+        grid.addWidget(self.chart, 1, 1)
+        grid.setColumnStretch(1, 1)
+        layout.addLayout(grid, 1)
 
         self.link_toggle.toggled.connect(self.on_link_mode_toggled)
         self.redraw_btn.clicked.connect(self.refresh)
         self.chart.dependency_created.connect(self.create_dependency_from_chart)
+        self.chart.link_status_changed.connect(self.info_label.setText)
+        self.chart.horizontalScrollBar().valueChanged.connect(self.header_view.horizontalScrollBar().setValue)
+        self.header_view.horizontalScrollBar().valueChanged.connect(self.chart.horizontalScrollBar().setValue)
+        self.chart.verticalScrollBar().valueChanged.connect(self.left_table.verticalScrollBar().setValue)
+        self.left_table.verticalScrollBar().valueChanged.connect(self.chart.verticalScrollBar().setValue)
+        self.left_table.horizontalHeader().sectionResized.connect(self._sync_left_width)
 
         self.refresh()
+
+    def _sync_left_width(self, *args):
+        total = sum(self.left_table.columnWidth(i) for i in range(self.left_table.columnCount())) + self.left_table.frameWidth() * 2
+        self.left_table.setFixedWidth(total + self.left_table.verticalHeader().width())
 
     def on_link_mode_toggled(self, checked: bool):
         self.chart.set_link_mode(checked)
@@ -1791,14 +1728,12 @@ class ChartTab(QWidget):
         answer = QMessageBox.question(
             self,
             "依存設定",
-            f"動作UID {source_uid} → 動作UID {target_uid} の開始依存を設定しますか？\n"
-            "はい: 元動作の終了で開始\n"
-            "いいえ: 元動作の開始で開始",
-            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
+            f"動作UID {source_uid} → 動作UID {target_uid} の開始依存を設定しますか？\nはい: 元動作の終了で開始\nいいえ: 元動作の開始で開始",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
         )
         if answer == QMessageBox.Cancel:
+            self.chart.clear_pending_selection()
             return
-
         self.model_about_to_change.emit("依存関係設定")
         target.start_operation_uid = source_uid
         target.start_trigger = "終了" if answer == QMessageBox.Yes else "開始"
@@ -1806,7 +1741,11 @@ class ChartTab(QWidget):
         self.model_changed.emit()
 
     def refresh(self):
+        self.chart.populate_left_table(self.model, self.left_table)
         self.chart.render_chart(self.model)
+        self.header_view.setScene(self.chart._header_scene)
+        self._sync_left_width()
+        self.chart.clear_pending_selection()
 
 
 # =========================
@@ -1817,7 +1756,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("タイミングチャートアプリ MVP")
-        self.resize(1550, 920)
+        self.resize(1700, 980)
 
         self.model = AppModel()
         self._undo_stack: List[Tuple[str, Dict]] = []
