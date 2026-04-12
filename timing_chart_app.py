@@ -1100,13 +1100,16 @@ class TimingChartView(QGraphicsView):
 
             dep_pen = QPen(QColor(20, 20, 20), 2)
             dep_pen.setStyle(Qt.DashLine)
+            dep_pen.setCapStyle(Qt.FlatCap)
 
             arrow_size = 10
+            source_gap = 8
             if p2.y() >= p1.y():
                 # destination is below: route above both points, arrow points downward
                 y_route = min(p1.y(), p2.y()) - 34
+                start_y = p1.y() - source_gap
                 end_y = p2.y() - arrow_size
-                scene.addLine(p1.x(), p1.y(), p1.x(), y_route, dep_pen)
+                scene.addLine(p1.x(), start_y, p1.x(), y_route, dep_pen)
                 scene.addLine(p1.x(), y_route, p2.x(), y_route, dep_pen)
                 scene.addLine(p2.x(), y_route, p2.x(), end_y, dep_pen)
 
@@ -1118,8 +1121,9 @@ class TimingChartView(QGraphicsView):
             else:
                 # destination is above: route below both points, arrow points upward
                 y_route = max(p1.y(), p2.y()) + 34
+                start_y = p1.y() + source_gap
                 end_y = p2.y() + arrow_size
-                scene.addLine(p1.x(), p1.y(), p1.x(), y_route, dep_pen)
+                scene.addLine(p1.x(), start_y, p1.x(), y_route, dep_pen)
                 scene.addLine(p1.x(), y_route, p2.x(), y_route, dep_pen)
                 scene.addLine(p2.x(), y_route, p2.x(), end_y, dep_pen)
 
