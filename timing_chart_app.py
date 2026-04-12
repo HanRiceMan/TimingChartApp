@@ -1098,22 +1098,37 @@ class TimingChartView(QGraphicsView):
             p1 = op_anchor[op.start_operation_uid][src_key]
             p2 = op_anchor[op.uid]["start"]
 
-            y_route = min(p1.y(), p2.y()) - 34
             dep_pen = QPen(QColor(20, 20, 20), 2)
             dep_pen.setStyle(Qt.DashLine)
 
-            # orthogonal dashed route
-            scene.addLine(p1.x(), p1.y(), p1.x(), y_route, dep_pen)
-            scene.addLine(p1.x(), y_route, p2.x(), y_route, dep_pen)
-            scene.addLine(p2.x(), y_route, p2.x(), p2.y(), dep_pen)
-
-            # arrow head at destination
             arrow_size = 10
-            arrow = QPolygonF([
-                p2,
-                QPointF(p2.x() - arrow_size * math.cos(math.pi / 6), p2.y() - arrow_size * math.sin(math.pi / 6)),
-                QPointF(p2.x() + arrow_size * math.cos(math.pi / 6), p2.y() - arrow_size * math.sin(math.pi / 6)),
-            ])
+            if p2.y() >= p1.y():
+                # destination is below: route above both points, arrow points downward
+                y_route = min(p1.y(), p2.y()) - 34
+                end_y = p2.y() - arrow_size
+                scene.addLine(p1.x(), p1.y(), p1.x(), y_route, dep_pen)
+                scene.addLine(p1.x(), y_route, p2.x(), y_route, dep_pen)
+                scene.addLine(p2.x(), y_route, p2.x(), end_y, dep_pen)
+
+                arrow = QPolygonF([
+                    p2,
+                    QPointF(p2.x() - arrow_size * math.cos(math.pi / 6), p2.y() - arrow_size * math.sin(math.pi / 6)),
+                    QPointF(p2.x() + arrow_size * math.cos(math.pi / 6), p2.y() - arrow_size * math.sin(math.pi / 6)),
+                ])
+            else:
+                # destination is above: route below both points, arrow points upward
+                y_route = max(p1.y(), p2.y()) + 34
+                end_y = p2.y() + arrow_size
+                scene.addLine(p1.x(), p1.y(), p1.x(), y_route, dep_pen)
+                scene.addLine(p1.x(), y_route, p2.x(), y_route, dep_pen)
+                scene.addLine(p2.x(), y_route, p2.x(), end_y, dep_pen)
+
+                arrow = QPolygonF([
+                    p2,
+                    QPointF(p2.x() - arrow_size * math.cos(math.pi / 6), p2.y() + arrow_size * math.sin(math.pi / 6)),
+                    QPointF(p2.x() + arrow_size * math.cos(math.pi / 6), p2.y() + arrow_size * math.sin(math.pi / 6)),
+                ])
+
             arrow_item = QGraphicsPolygonItem(arrow)
             arrow_item.setBrush(QBrush(QColor(20, 20, 20)))
             arrow_item.setPen(QPen(QColor(20, 20, 20)))
@@ -1975,6 +1990,13 @@ class MainWindow(QMainWindow):
                 start_trigger="終了", start_operation_uid=7,
                 end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
                 from_value="ON", to_value="OFF",
+            ),
+            OperationInstance(
+                uid=9, action_uid=2, duration_ms=450,
+                operation_mode="ポイント移動", time_mode="直値指定",
+                start_trigger="終了", start_operation_uid=7,
+                end_mode="直値指定", end_trigger="終了", end_operation_uid=None,
+                from_value="上限", to_value="待機",
             ),
         ]
         self.model.normalize_onoff_points()
