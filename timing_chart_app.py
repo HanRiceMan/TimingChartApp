@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem, QInputDialog
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal, QEvent
-from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence, QPainter, QPen, QPolygonF
+from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence, QPainter, QPen, QPolygonF, QPainterPath
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGraphicsItem,
     QGraphicsLineItem,
+    QGraphicsPathItem,
     QGraphicsPolygonItem,
     QGraphicsRectItem,
     QGraphicsScene,
@@ -979,55 +980,98 @@ class TimingChartView(QGraphicsView):
 
         op_anchor: Dict[int, Dict[str, QPointF]] = {}
 
-        for op in sorted(model.operations, key=lambda x: x.uid):
+        def point_y(top: float, values: List[str], value: str) -> float:
+            if not values:
+                return top + row_h / 2
+            index_map = {p: i for i, p in enumerate(values)}
+            n = max(1, len(values) - 1)
+            idx = index_map.get(value, 0)
+            return top + 18 + (row_h - 36) * (idx / max(1, n))
+
+        # draw state timelines by small item so inactive periods are also connected
+        timeline_end = max_time + 1200
+        ops_by_small: Dict[int, List[OperationInstance]] = {}
+        for op in model.operations:
             action_def = model.get_action_def(op.action_uid)
             if not action_def:
                 continue
-            small_uid = action_def.small_item_uid
+            ops_by_small.setdefault(action_def.small_item_uid, []).append(op)
+
+        for small_uid, ops_for_small in ops_by_small.items():
             row = row_map.get(small_uid)
             if row is None:
                 continue
-
-            start_time, end_time = schedule.get(op.uid, (0, 0))
             top = header_h + row * row_h
-            x1 = left_w + start_time * time_scale
-            x2 = left_w + end_time * time_scale
-
             point_values = model.point_options_for_small(small_uid)
-            index_map = {p: i for i, p in enumerate(point_values)} if point_values else {}
-            n = max(1, len(point_values) - 1)
+            ops_sorted = sorted(ops_for_small, key=lambda o: (schedule.get(o.uid, (0, 0))[0], o.uid))
 
-            small_item = model.get_hierarchy(action_def.small_item_uid)
-            if small_item and small_item.action_type == "onoff":
-                y1 = top + 18 + (row_h - 36) * (0 if op.from_value == "ON" else 1)
-                y2 = top + 18 + (row_h - 36) * (0 if op.to_value == "ON" else 1)
-                pen = QPen(QColor(28, 124, 84), 3)
-                scene.addLine(x1, y1, x2, y2, pen)
-                if y1 != y2:
-                    scene.addLine(x1, y1, x1, y2, pen)
-                hit_rect = QRectF(min(x1, x2), min(y1, y2) - 12, max(24, abs(x2 - x1)), abs(y2 - y1) + 24)
-            else:
-                f_idx = index_map.get(op.from_value, 0)
-                t_idx = index_map.get(op.to_value, f_idx)
-                y1 = top + 18 + (row_h - 36) * (f_idx / max(1, n))
-                y2 = top + 18 + (row_h - 36) * (t_idx / max(1, n))
-                pen = QPen(QColor(45, 92, 191), 3)
-                scene.addLine(x1, y1, x2, y2, pen)
-                hit_rect = QRectF(min(x1, x2) - 8, min(y1, y2) - 12, max(24, abs(x2 - x1) + 16), abs(y2 - y1) + 24)
+            current_time = 0
+            current_value = ops_sorted[0].from_value if ops_sorted else (point_values[0] if point_values else "")
+            current_y = point_y(top, point_values, current_value)
 
-                for p, i in index_map.items():
-                    py = top + 18 + (row_h - 36) * (i / max(1, n))
-                    scene.addLine(left_w - 8, py, left_w, py, QPen(QColor(140, 140, 140)))
+            for op in ops_sorted:
+                start_time, end_time = schedule.get(op.uid, (0, 0))
+                x1 = left_w + start_time * time_scale
+                x2 = left_w + end_time * time_scale
+                y1 = point_y(top, point_values, op.from_value)
+                y2 = point_y(top, point_values, op.to_value)
 
-            hit = SelectableOpRect(hit_rect, op.uid, self._on_operation_clicked)
-            hit.setBrush(QBrush(QColor(0, 0, 0, 1)))
-            hit.setPen(QPen(QColor(0, 0, 0, 0)))
-            scene.addItem(hit)
+                # hold previous state until this operation begins
+                hold_x1 = left_w + current_time * time_scale
+                hold_x2 = x1
+                if hold_x2 > hold_x1:
+                    hold_pen = QPen(QColor(200, 40, 40), 3)
+                    scene.addLine(hold_x1, current_y, hold_x2, current_y, hold_pen)
 
-            caption = scene.addSimpleText(f"OP{op.uid}")
-            caption.setPos(x1 + 6, top + 8)
-            op_anchor[op.uid] = {"start": QPointF(x1, y1), "end": QPointF(x2, y2)}
+                # transition during the operation
+                small_item = model.get_hierarchy(small_uid)
+                if small_item and small_item.action_type == "onoff":
+                    trans_pen = QPen(QColor(28, 124, 84), 3)
+                    if y1 != current_y:
+                        scene.addLine(x1, current_y, x1, y1, QPen(QColor(200, 40, 40), 3))
+                    if y1 != y2:
+                        scene.addLine(x1, y1, x1, y2, trans_pen)
+                        scene.addLine(x1, y2, x2, y2, trans_pen)
+                    else:
+                        scene.addLine(x1, y1, x2, y2, trans_pen)
+                else:
+                    trans_pen = QPen(QColor(45, 92, 191), 3)
+                    if y1 != current_y:
+                        scene.addLine(x1, current_y, x1, y1, QPen(QColor(200, 40, 40), 3))
+                    scene.addLine(x1, y1, x2, y2, trans_pen)
 
+                hit_rect = QRectF(min(x1, x2) - 8, min(current_y, y1, y2) - 12, max(24, abs(x2 - x1) + 16), max(current_y, y1, y2) - min(current_y, y1, y2) + 24)
+                hit = SelectableOpRect(hit_rect, op.uid, self._on_operation_clicked)
+                hit.setBrush(QBrush(QColor(0, 0, 0, 1)))
+                hit.setPen(QPen(QColor(0, 0, 0, 0)))
+                scene.addItem(hit)
+
+                caption = scene.addSimpleText(f"OP{op.uid}")
+                caption.setPos(x1 + 6, top + 8)
+                op_anchor[op.uid] = {"start": QPointF(x1, y1), "end": QPointF(x2, y2)}
+
+                current_time = end_time
+                current_value = op.to_value
+                current_y = y2
+
+            # tail after the last operation
+            tail_x1 = left_w + current_time * time_scale
+            tail_x2 = left_w + timeline_end * time_scale
+            if tail_x2 > tail_x1:
+                tail_pen = QPen(QColor(200, 40, 40), 3)
+                scene.addLine(tail_x1, current_y, tail_x2, current_y, tail_pen)
+
+        # left edge ticks for each point row
+        for s in smalls:
+            row = row_map[s.uid]
+            top = header_h + row * row_h
+            point_values = model.point_options_for_small(s.uid)
+            for p in point_values:
+                py = point_y(top, point_values, p)
+                scene.addLine(left_w - 8, py, left_w, py, QPen(QColor(140, 140, 140)))
+
+        # dependency arrows as black wavy lines so they do not blend with time-series traces
+        import math
         for op in model.operations:
             if op.start_operation_uid is None:
                 continue
@@ -1038,21 +1082,35 @@ class TimingChartView(QGraphicsView):
             p1 = op_anchor[op.start_operation_uid][src_key]
             p2 = op_anchor[op.uid]["start"]
 
-            line = scene.addLine(p1.x(), p1.y(), p2.x(), p2.y(), QPen(QColor(180, 70, 50), 2))
-            angle = line.line().angle()
+            dx = p2.x() - p1.x()
+            dy = p2.y() - p1.y()
+            length = max(1.0, (dx * dx + dy * dy) ** 0.5)
+            nx = -dy / length
+            ny = dx / length
+
+            path = QPainterPath(p1)
+            steps = max(6, int(length / 80))
+            for i in range(1, steps + 1):
+                t = i / steps
+                bx = p1.x() + dx * t
+                by = p1.y() + dy * t
+                wave = 8 * math.sin(t * math.pi * steps)
+                path.lineTo(bx + nx * wave, by + ny * wave)
+
+            path_item = QGraphicsPathItem(path)
+            path_item.setPen(QPen(QColor(30, 30, 30), 2))
+            scene.addItem(path_item)
+
+            angle = math.atan2(-(p2.y() - p1.y()), p2.x() - p1.x())
             arrow_size = 10
-            p = p2
-            import math
-            rad1 = math.radians(angle + 150)
-            rad2 = math.radians(angle - 150)
             arrow = QPolygonF([
-                p,
-                QPointF(p.x() + arrow_size * math.cos(rad1), p.y() - arrow_size * math.sin(rad1)),
-                QPointF(p.x() + arrow_size * math.cos(rad2), p.y() - arrow_size * math.sin(rad2)),
+                p2,
+                QPointF(p2.x() - arrow_size * math.cos(angle - math.pi / 6), p2.y() + arrow_size * math.sin(angle - math.pi / 6)),
+                QPointF(p2.x() - arrow_size * math.cos(angle + math.pi / 6), p2.y() + arrow_size * math.sin(angle + math.pi / 6)),
             ])
             arrow_item = QGraphicsPolygonItem(arrow)
-            arrow_item.setBrush(QBrush(QColor(180, 70, 50)))
-            arrow_item.setPen(QPen(QColor(180, 70, 50)))
+            arrow_item.setBrush(QBrush(QColor(30, 30, 30)))
+            arrow_item.setPen(QPen(QColor(30, 30, 30)))
             scene.addItem(arrow_item)
 
 
