@@ -871,6 +871,9 @@ class TimingChartView(QGraphicsView):
         scene.addSimpleText("ポイント").setPos(col_large + col_middle + col_small + 12, 18)
 
         # Left rows / labels
+        prev_large_uid = None
+        prev_middle_uid = None
+
         for s in smalls:
             row = row_map[s.uid]
             top = header_h + row * row_h
@@ -880,11 +883,20 @@ class TimingChartView(QGraphicsView):
             scene.addRect(left_w, top, graph_w, row_h, QPen(QColor(232, 236, 240)), QBrush(graph_bg))
             scene.addLine(0, top + row_h, total_w, top + row_h, QPen(QColor(224, 228, 233), 1))
 
+            # vertical separators for item columns
+            scene.addLine(x_large, top, x_large, top + row_h, QPen(QColor(210, 214, 220), 1))
+            scene.addLine(x_middle, top, x_middle, top + row_h, QPen(QColor(210, 214, 220), 1))
+            scene.addLine(x_small, top, x_small, top + row_h, QPen(QColor(210, 214, 220), 1))
+
             large = model.get_large_for_small(s.uid)
             middle = model.get_middle_for_small(s.uid)
 
-            scene.addSimpleText(f"{large.id_number} {large.name}" if large else "").setPos(10, top + 14)
-            scene.addSimpleText(f"{middle.id_number} {middle.name}" if middle else "").setPos(col_large + 10, top + 14)
+            # merge repeated large / middle display across consecutive rows
+            if large and large.uid != prev_large_uid:
+                scene.addSimpleText(f"{large.id_number} {large.name}").setPos(10, top + 14)
+            if middle and middle.uid != prev_middle_uid:
+                scene.addSimpleText(f"{middle.id_number} {middle.name}").setPos(col_large + 10, top + 14)
+
             scene.addSimpleText(f"{s.id_number} {s.name}").setPos(col_large + col_middle + 10, top + 14)
 
             point_values = model.point_options_for_small(s.uid)
@@ -892,6 +904,9 @@ class TimingChartView(QGraphicsView):
             for i, p in enumerate(point_values):
                 py = top + 18 + (row_h - 36) * (i / max(1, n))
                 scene.addSimpleText(f"{i+1}:{p}").setPos(col_large + col_middle + col_small + 10, py - 8)
+
+            prev_large_uid = large.uid if large else None
+            prev_middle_uid = middle.uid if middle else None
 
         # Time ruler and grid
         minor_step = 100
