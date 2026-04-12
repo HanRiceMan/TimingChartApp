@@ -873,30 +873,55 @@ class TimingChartView(QGraphicsView):
         # Left rows / labels
         prev_large_uid = None
         prev_middle_uid = None
+        large_group_start_top = None
+        middle_group_start_top = None
+        current_large_fill = None
+        current_middle_fill = None
+
+        def group_fill(index: int):
+            return QColor(250, 251, 252) if index % 2 == 0 else QColor(243, 246, 248)
 
         for s in smalls:
             row = row_map[s.uid]
             top = header_h + row * row_h
-            left_bg = QColor(250, 251, 252) if row % 2 == 0 else QColor(243, 246, 248)
             graph_bg = QColor(252, 253, 254) if row % 2 == 0 else QColor(248, 250, 252)
-            scene.addRect(0, top, left_w, row_h, QPen(QColor(220, 225, 230)), QBrush(left_bg))
             scene.addRect(left_w, top, graph_w, row_h, QPen(QColor(232, 236, 240)), QBrush(graph_bg))
-            scene.addLine(0, top + row_h, total_w, top + row_h, QPen(QColor(224, 228, 233), 1))
-
-            # vertical separators for item columns
-            scene.addLine(x_large, top, x_large, top + row_h, QPen(QColor(210, 214, 220), 1))
-            scene.addLine(x_middle, top, x_middle, top + row_h, QPen(QColor(210, 214, 220), 1))
-            scene.addLine(x_small, top, x_small, top + row_h, QPen(QColor(210, 214, 220), 1))
+            scene.addLine(left_w, top + row_h, total_w, top + row_h, QPen(QColor(224, 228, 233), 1))
 
             large = model.get_large_for_small(s.uid)
             middle = model.get_middle_for_small(s.uid)
 
-            # merge repeated large / middle display across consecutive rows
-            if large and large.uid != prev_large_uid:
-                scene.addSimpleText(f"{large.id_number} {large.name}").setPos(10, top + 14)
-            if middle and middle.uid != prev_middle_uid:
-                scene.addSimpleText(f"{middle.id_number} {middle.name}").setPos(col_large + 10, top + 14)
+            if prev_middle_uid is not None and (middle is None or middle.uid != prev_middle_uid):
+                scene.addRect(
+                    col_large, middle_group_start_top, col_middle, top - middle_group_start_top,
+                    QPen(QColor(210, 214, 220), 1), QBrush(current_middle_fill)
+                )
+                prev_middle = model.get_hierarchy(prev_middle_uid)
+                if prev_middle:
+                    scene.addSimpleText(f"{prev_middle.id_number} {prev_middle.name}").setPos(col_large + 10, middle_group_start_top + 14)
 
+            if prev_large_uid is not None and (large is None or large.uid != prev_large_uid):
+                scene.addRect(
+                    0, large_group_start_top, col_large, top - large_group_start_top,
+                    QPen(QColor(210, 214, 220), 1), QBrush(current_large_fill)
+                )
+                prev_large = model.get_hierarchy(prev_large_uid)
+                if prev_large:
+                    scene.addSimpleText(f"{prev_large.id_number} {prev_large.name}").setPos(10, large_group_start_top + 14)
+
+            if large and large.uid != prev_large_uid:
+                large_group_start_top = top
+                current_large_fill = group_fill(row)
+
+            if middle and middle.uid != prev_middle_uid:
+                middle_group_start_top = top
+                current_middle_fill = group_fill(row)
+
+            small_fill = group_fill(row)
+            scene.addRect(col_large + col_middle, top, col_small, row_h, QPen(QColor(220, 225, 230)), QBrush(small_fill))
+            scene.addRect(col_large + col_middle + col_small, top, col_points, row_h, QPen(QColor(220, 225, 230)), QBrush(small_fill))
+            scene.addLine(x_small, top, x_small, top + row_h, QPen(QColor(210, 214, 220), 1))
+            scene.addLine(left_w, top, left_w, top + row_h, QPen(QColor(110, 120, 135), 2))
             scene.addSimpleText(f"{s.id_number} {s.name}").setPos(col_large + col_middle + 10, top + 14)
 
             point_values = model.point_options_for_small(s.uid)
@@ -907,6 +932,30 @@ class TimingChartView(QGraphicsView):
 
             prev_large_uid = large.uid if large else None
             prev_middle_uid = middle.uid if middle else None
+
+        body_bottom = header_h + len(smalls) * row_h
+        if prev_middle_uid is not None and middle_group_start_top is not None:
+            prev_middle = model.get_hierarchy(prev_middle_uid)
+            scene.addRect(
+                col_large, middle_group_start_top, col_middle, body_bottom - middle_group_start_top,
+                QPen(QColor(210, 214, 220), 1), QBrush(current_middle_fill)
+            )
+            if prev_middle:
+                scene.addSimpleText(f"{prev_middle.id_number} {prev_middle.name}").setPos(col_large + 10, middle_group_start_top + 14)
+
+        if prev_large_uid is not None and large_group_start_top is not None:
+            prev_large = model.get_hierarchy(prev_large_uid)
+            scene.addRect(
+                0, large_group_start_top, col_large, body_bottom - large_group_start_top,
+                QPen(QColor(210, 214, 220), 1), QBrush(current_large_fill)
+            )
+            if prev_large:
+                scene.addSimpleText(f"{prev_large.id_number} {prev_large.name}").setPos(10, large_group_start_top + 14)
+
+        # redraw persistent separators
+        scene.addLine(x_large, 0, x_large, header_h, QPen(QColor(210, 214, 220), 1))
+        scene.addLine(x_middle, 0, x_middle, header_h, QPen(QColor(210, 214, 220), 1))
+        scene.addLine(x_small, 0, x_small, total_h, QPen(QColor(210, 214, 220), 1))
 
         # Time ruler and grid
         minor_step = 100
