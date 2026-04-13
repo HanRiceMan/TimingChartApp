@@ -1591,6 +1591,8 @@ class ChartTab(QWidget):
         self.left_table.horizontalHeader().setVisible(False)
         self.left_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.left_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.left_table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.left_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.left_table.setFocusPolicy(Qt.NoFocus)
         self.left_table.setAlternatingRowColors(False)
         self.left_table.setMinimumWidth(570)
@@ -1633,6 +1635,8 @@ class ChartTab(QWidget):
 
     def _sync_vertical_from_chart(self, value: int):
         bar = self.left_table.verticalScrollBar()
+        if bar.minimum() != self.chart.verticalScrollBar().minimum() or bar.maximum() != self.chart.verticalScrollBar().maximum():
+            bar.setRange(self.chart.verticalScrollBar().minimum(), self.chart.verticalScrollBar().maximum())
         if bar.value() != value:
             bar.setValue(value)
 
@@ -1678,7 +1682,7 @@ class ChartTab(QWidget):
 
         chart_bar = self.chart.verticalScrollBar()
         table_bar = self.left_table.verticalScrollBar()
-        table_bar.setSingleStep(chart_bar.singleStep())
+        table_bar.setSingleStep(1)
         table_bar.setPageStep(chart_bar.pageStep())
         table_bar.setRange(chart_bar.minimum(), chart_bar.maximum())
         table_bar.setValue(chart_bar.value())
