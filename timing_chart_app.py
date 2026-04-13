@@ -637,6 +637,24 @@ class PointColumnWidget(QWidget):
             painter.drawText(8, int(y + 5), f"{i+1}:{p}")
 
 
+class SyncedLeftTableWidget(QTableWidget):
+    def wheelEvent(self, event):
+        event.ignore()
+
+    def keyPressEvent(self, event):
+        if event.key() in (
+            Qt.Key_Up,
+            Qt.Key_Down,
+            Qt.Key_PageUp,
+            Qt.Key_PageDown,
+            Qt.Key_Home,
+            Qt.Key_End,
+        ):
+            event.ignore()
+            return
+        super().keyPressEvent(event)
+
+
 class TimingChartView(QGraphicsView):
     dependency_created = Signal(int, int)
     link_status_changed = Signal(str)
@@ -1566,7 +1584,7 @@ class ChartTab(QWidget):
             item.setBackground(QBrush(QColor(236, 240, 244)))
             self.left_header.setItem(0, i, item)
 
-        self.left_table = QTableWidget(0, 4)
+        self.left_table = SyncedLeftTableWidget(0, 4)
         self.left_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.left_table.setSelectionMode(QAbstractItemView.NoSelection)
         self.left_table.verticalHeader().setVisible(False)
@@ -1604,14 +1622,24 @@ class ChartTab(QWidget):
         self.chart.link_status_changed.connect(self.info_label.setText)
         self.chart.horizontalScrollBar().valueChanged.connect(self.header_view.horizontalScrollBar().setValue)
         self.header_view.horizontalScrollBar().valueChanged.connect(self.chart.horizontalScrollBar().setValue)
-        self.chart.verticalScrollBar().valueChanged.connect(self.left_table.verticalScrollBar().setValue)
-        self.left_table.verticalScrollBar().valueChanged.connect(self.chart.verticalScrollBar().setValue)
+        self.chart.verticalScrollBar().valueChanged.connect(self._sync_vertical_from_chart)
+        self.left_table.verticalScrollBar().valueChanged.connect(self._sync_vertical_from_table)
         self.left_table.horizontalHeader().sectionResized.connect(self._sync_left_width)
 
         self.refresh()
 
     def chart_left_header_height(self):
         return TimingChartView().left_layout()["header_h"]
+
+    def _sync_vertical_from_chart(self, value: int):
+        bar = self.left_table.verticalScrollBar()
+        if bar.value() != value:
+            bar.setValue(value)
+
+    def _sync_vertical_from_table(self, value: int):
+        bar = self.chart.verticalScrollBar()
+        if bar.value() != value:
+            bar.setValue(value)
 
     def _sync_left_width(self, *args):
         total = sum(self.left_table.columnWidth(i) for i in range(self.left_table.columnCount()))
@@ -1647,6 +1675,14 @@ class ChartTab(QWidget):
         self.chart.render_chart(self.model)
         self.header_view.setScene(self.chart._header_scene)
         self._sync_left_width()
+
+        chart_bar = self.chart.verticalScrollBar()
+        table_bar = self.left_table.verticalScrollBar()
+        table_bar.setSingleStep(chart_bar.singleStep())
+        table_bar.setPageStep(chart_bar.pageStep())
+        table_bar.setRange(chart_bar.minimum(), chart_bar.maximum())
+        table_bar.setValue(chart_bar.value())
+
         self.chart.clear_pending_selection()
 
 
